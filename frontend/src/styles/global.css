@@ -1,0 +1,317 @@
+/* ==================================================================
+   Reset, design tokens, and base element styles.
+   ================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/*
+ * The document itself must never scroll.
+ *
+ * This app is a fixed viewport shell: the sidebar, top bar, and composer stay
+ * put and only the message thread scrolls. Without this clamp the document was
+ * scrollable by a few hundred pixels of phantom overflow, and because the shell
+ * is exactly viewport height, any document scroll slid the entire application up
+ * and off screen, leaving a blank background. Scrolling with the pointer over a
+ * non scrollable region such as the composer chained straight out to the
+ * document and triggered exactly that.
+ *
+ * Measured before the fix: documentElement.scrollHeight 1048 against
+ * clientHeight 720, and window.scrollTo(0, 400) moved .shell to top -328.
+ * No element outside the thread extended past the fold, so nothing is lost by
+ * clamping here.
+ */
+html,
+body {
+  overflow: hidden;
+  /* Belt and braces: stop any inner scroller from chaining out to the document. */
+  overscroll-behavior: none;
+}
+
+body {
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+figure,
+blockquote,
+dl,
+dd {
+  margin: 0;
+}
+
+ul[class],
+ol[class] {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* The hidden attribute must win over any display rule we set on a component,
+   otherwise collapsed content stays visible and keyboard reachable. */
+[hidden] {
+  display: none !important;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  margin: 0;
+}
+
+button {
+  cursor: pointer;
+}
+
+table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+/* ------------------------------------------------------------------
+   Tokens
+   ------------------------------------------------------------------ */
+
+:root {
+  /* Surfaces and text, light theme. */
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-2: #f1f3f7;
+  --border: #e2e5ec;
+  --text: #14171f;
+  --text-muted: #5b6474;
+  --accent: #1f5fbf;
+  --accent-hover: #1a4f9f;
+  --accent-soft: #e8f0fc;
+
+  /* Semantic colors. */
+  --success: #1f8a5f;
+  --warning: #b4740c;
+  --danger: #c23b3b;
+  --info: #1f5fbf;
+
+  /* Soft washes derived per theme so badges and banners stay readable. */
+  --success-soft: #e6f4ee;
+  --warning-soft: #fbf1de;
+  --danger-soft: #fbeaea;
+  --info-soft: #e8f0fc;
+
+  /* Ink variants, darkened so semantic text on a soft wash clears 4.5:1. */
+  --success-ink: #146b45;
+  --warning-ink: #8a5800;
+  --danger-ink: #9b2626;
+  --info-ink: #1a4f9f;
+
+  /* Text on top of a solid accent or semantic fill. */
+  --on-accent: #ffffff;
+
+  /* Radii. */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+
+  /* Spacing scale in 4px steps. */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 28px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* Type. */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.8125rem;
+  --fs-md: 0.9375rem;
+  --fs-lg: 1.0625rem;
+  --fs-xl: 1.25rem;
+
+  /* Elevation. */
+  --shadow-sm: 0 1px 2px rgba(16, 21, 32, 0.06);
+  --shadow-md: 0 2px 8px rgba(16, 21, 32, 0.08);
+  --shadow-lg: 0 12px 36px rgba(16, 21, 32, 0.16);
+
+  /* Layout. */
+  --sidebar-w: 280px;
+  --thread-max: 820px;
+  --header-h: 60px;
+
+  /* Motion. */
+  --t-fast: 120ms;
+  --t-med: 200ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  --bg: #0e1117;
+  --surface: #161a22;
+  --surface-2: #1d222c;
+  --border: #2a303c;
+  --text: #e8eaf0;
+  --text-muted: #98a1b3;
+  --accent: #5b9bf5;
+  --accent-hover: #7ab0ff;
+  --accent-soft: #16233a;
+
+  /* Semantic colors lightened so they clear 4.5:1 on the dark surfaces. */
+  --success: #46c68d;
+  --warning: #e0a53c;
+  --danger: #f07272;
+  --info: #5b9bf5;
+
+  --success-soft: #12241d;
+  --warning-soft: #26200f;
+  --danger-soft: #2a1718;
+  --info-soft: #16233a;
+
+  /* On dark washes the lightened semantic colors already read cleanly. */
+  --success-ink: #58d29b;
+  --warning-ink: #e7b352;
+  --danger-ink: #f58a8a;
+  --info-ink: #7ab0ff;
+
+  --on-accent: #0b0f16;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 10px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 14px 40px rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}
+
+/* ------------------------------------------------------------------
+   Base
+   ------------------------------------------------------------------ */
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+
+/* A single visible focus treatment for every interactive element. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* Remove the default ring only where focus-visible already covers it. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+/* Scrollbars, kept unobtrusive but visible in both themes. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+  background-clip: content-box;
+}
+
+/* Visually hidden but available to screen readers. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Honor a reduced motion preference everywhere. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

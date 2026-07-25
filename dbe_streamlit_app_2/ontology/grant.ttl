@@ -1,0 +1,95 @@
+@prefix ex: <http://example.org/clinical#> .
+@prefix fg: <http://example.org/ontology/faculty-grants#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+#################################################################
+# Ontology
+#################################################################
+
+fg:FacultyGrantsOntology a owl:Ontology ;
+    rdfs:label "Faculty Grants Ontology" ;
+    rdfs:comment "Schema for modeling faculty research grants, aligned with ex:Person." .
+
+#################################################################
+# Classes
+#################################################################
+
+fg:Grant a owl:Class ;
+    rdfs:label "Grant" .
+
+fg:FundingAgency a owl:Class ;
+    rdfs:label "Funding Agency" .
+
+fg:GrantPeriod a owl:Class ;
+    rdfs:label "Grant Period" .
+
+fg:ResearchArea a owl:Class ;
+    rdfs:label "Research Area" .
+
+fg:Role a owl:Class ;
+    rdfs:label "Grant Role" .
+
+#################################################################
+# Object Properties
+#################################################################
+
+fg:hasGrant a owl:ObjectProperty ;
+    rdfs:label "has grant" ;
+    rdfs:domain ex:Person ;
+    rdfs:range fg:Grant .
+
+fg:fundedBy a owl:ObjectProperty ;
+    rdfs:label "funded by" ;
+    rdfs:domain fg:Grant ;
+    rdfs:range fg:FundingAgency .
+
+fg:hasGrantPeriod a owl:ObjectProperty ;
+    rdfs:label "has grant period" ;
+    rdfs:domain fg:Grant ;
+    rdfs:range fg:GrantPeriod .
+
+fg:hasResearchArea a owl:ObjectProperty ;
+    rdfs:label "has research area" ;
+    rdfs:domain fg:Grant ;
+    rdfs:range fg:ResearchArea .
+
+fg:hasGrantRole a owl:ObjectProperty ;
+    rdfs:label "has grant role" ;
+    rdfs:domain ex:Person ;
+    rdfs:range fg:Role .
+
+#################################################################
+# Datatype Properties
+#################################################################
+
+fg:grantTitle a owl:DatatypeProperty ;
+    rdfs:label "grant title" ;
+    rdfs:domain fg:Grant ;
+    rdfs:range xsd:string .
+
+fg:grantNumber a owl:DatatypeProperty ;
+    rdfs:label "grant number" ;
+    rdfs:domain fg:Grant ;
+    rdfs:range xsd:string .
+
+fg:totalAmount a owl:DatatypeProperty ;
+    rdfs:label "total amount" ;
+    rdfs:domain fg:Grant ;
+    rdfs:range xsd:decimal .
+
+fg:grantStatus a owl:DatatypeProperty ;
+    rdfs:label "grant status" ;
+    rdfs:domain fg:Grant ;
+    rdfs:range xsd:string .
+
+fg:startDate a owl:DatatypeProperty ;
+    rdfs:label "start date" ;
+    rdfs:domain fg:GrantPeriod ;
+    rdfs:range xsd:date .
+
+fg:endDate a owl:DatatypeProperty ;
+    rdfs:label "end date" ;
+    rdfs:domain fg:GrantPeriod ;
+    rdfs:range xsd:date .

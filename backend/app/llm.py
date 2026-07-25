@@ -1,0 +1,152 @@
+"""
+llm.py
+
+OpenAI access for the whole backend: one shared async client, a concurrency
+gate, and a tolerant JSON helper.
+
+Two details drive the design here:
+
+1. The newer OpenAI reasoning models reject `temperature` and use
+   `max_completion_tokens` instead of `max_tokens`, so neither legacy
+   parameter is ever sent.
+2. JSON mode is used wherever the prompt genuinely always returns an object.
+   The original notebook prompts allowed a bare string "NONE" as an answer,
+   which JSON mode forbids, so those prompts were reshaped to return an
+   explicit boolean field instead. `parse_json` still tolerates fenced blocks
+   and a literal NONE so a stray response cannot take a request down.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from typing import Any
+
+from openai import AsyncOpenAI
+
+from .settings import settings
+
+log = logging.getLogger(__name__)
+
+_client: AsyncOpenAI | None = None
+# An asyncio.Semaphore binds to the running loop, so it is created lazily per
+# loop rather than at import time.
+_semaphores: dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
+
+
+def get_client() -> AsyncOpenAI:
+    global _client
+    if _client is None:
+        if not settings.openai_api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is not set. Add it to the .env file at the project root."
+            )
+        _client = AsyncOpenAI(
+            api_key=settings.openai_api_key,
+            timeout=float(settings.request_timeout_s),
+            max_retries=3,
+        )
+    return _client
+
+
+def get_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _semaphores.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(settings.max_concurrency)
+        _semaphores[loop] = sem
+    return sem
+
+
+async def chat(
+    system: str,
+    user: str,
+    *,
+    json_mode: bool = False,
+    model: str | None = None,
+) -> str:
+    """Single turn completion. Returns the raw assistant text."""
+    client = get_client()
+    kwargs: dict[str, Any] = {
+        "model": model or settings.chat_model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+
+    async with get_semaphore():
+        response = await client.chat.completions.create(**kwargs)
+
+    content = response.choices[0].message.content
+    return (content or "").strip()
+
+
+async def chat_json(system: str, user: str, *, model: str | None = None) -> Any:
+    """Completion in JSON mode, parsed. Returns None when nothing usable came back."""
+    raw = await chat(system, user, json_mode=True, model=model)
+    return parse_json(raw)
+
+
+async def embed(text: str) -> list[float]:
+    """Embed a single string with the configured embedding model."""
+    client = get_client()
+    async with get_semaphore():
+        response = await client.embeddings.create(
+            model=settings.embedding_model,
+            input=text,
+        )
+    return response.data[0].embedding
+
+
+_FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+
+
+def parse_json(raw: str) -> Any:
+    """
+    Best effort JSON parse of a model response.
+
+    Handles fenced code blocks, a literal NONE sentinel, and objects wrapped in
+    incidental prose. Returns None when the text cannot be salvaged.
+    """
+    if not raw:
+        return None
+
+    text = _FENCE.sub("", raw.strip())
+    if text.strip().upper() == "NONE":
+        return None
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Fall back to the outermost balanced object or array in the response.
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = text.find(opener)
+        end = text.rfind(closer)
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                continue
+
+    log.warning("Could not parse model response as JSON: %s", text[:200])
+    return None
+
+
+async def probe() -> dict[str, Any]:
+    """
+    Confirm the key works and that the embedding width matches the stored
+    vectors. A mismatch here is the single most common cause of a working
+    looking app that returns irrelevant results.
+    """
+    vector = await embed("dimension probe")
+    return {
+        "embedding_dimensions": len(vector),
+        "matches_index": len(vector) == settings.embedding_dimensions,
+    }

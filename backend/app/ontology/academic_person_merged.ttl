@@ -1,0 +1,76 @@
+@prefix : <http://example.org/university#> .
+@prefix ex: <http://example.org/academic#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:hasAffiliation a owl:ObjectProperty ;
+    rdfs:label "has affiliation" ;
+    rdfs:domain ex:Person ;
+    rdfs:range ex:Organization .
+
+ex:hasEmail a owl:DatatypeProperty ;
+    rdfs:label "has email" ;
+    rdfs:domain ex:Person ;
+    rdfs:range xsd:string .
+
+ex:hasName a owl:DatatypeProperty ;
+    rdfs:label "has name" ;
+    rdfs:domain ex:Person ;
+    rdfs:range xsd:string .
+
+:appointedAt a owl:ObjectProperty ;
+    rdfs:comment "Specifies the university where the appointment was held." ;
+    rdfs:domain :AcademicAppointment ;
+    rdfs:range :University .
+
+:appointmentTitle a owl:DatatypeProperty ;
+    rdfs:comment "The title of the academic appointment (e.g., Associate Professor)." ;
+    rdfs:domain :AcademicAppointment ;
+    rdfs:range xsd:string .
+
+:departmentName a owl:DatatypeProperty ;
+    rdfs:comment "The name of the department." ;
+    rdfs:domain :Department ;
+    rdfs:range xsd:string .
+
+:endDate a owl:DatatypeProperty ;
+    rdfs:comment "The end date of the appointment (if applicable)." ;
+    rdfs:domain :AcademicAppointment ;
+    rdfs:range xsd:date .
+
+:holdsAppointment a owl:ObjectProperty ;
+    rdfs:comment "Links a faculty member to their academic appointments." ;
+    rdfs:range :AcademicAppointment .
+
+:inDepartment a owl:ObjectProperty ;
+    rdfs:comment "Specifies the department where the appointment was held." ;
+    rdfs:domain :AcademicAppointment ;
+    rdfs:range :Department .
+
+:startDate a owl:DatatypeProperty ;
+    rdfs:comment "The start date of the appointment." ;
+    rdfs:domain :AcademicAppointment ;
+    rdfs:range xsd:date .
+
+:universityName a owl:DatatypeProperty ;
+    rdfs:comment "The name of the university." ;
+    rdfs:domain :University ;
+    rdfs:range xsd:string .
+
+:Department a owl:Class ;
+    rdfs:label "Department" ;
+    rdfs:comment "A specific department within a university (e.g., Computer Science, Physics)." .
+
+:University a owl:Class ;
+    rdfs:label "University" ;
+    rdfs:comment "An academic institution employing the faculty." .
+
+ex:Person a owl:Class ;
+    rdfs:label "Person" ;
+    rdfs:comment "An individual involved in academic activities such as authorship, instruction, or research." .
+
+:AcademicAppointment a owl:Class ;
+    rdfs:label "Academic Appointment" ;
+    rdfs:comment "A record of a faculty member's role or position within an academic institution." .
+

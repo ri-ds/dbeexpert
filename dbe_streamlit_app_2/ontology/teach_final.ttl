@@ -1,0 +1,93 @@
+@prefix ex: <http://example.org/teach#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<http://example.org/ontology/FacultyMember> owl:equivalentClass <http://example.org/ontology/Person> .
+
+<http://example.org/ontology/Person> owl:equivalentClass <http://example.org/ontology/Person> .
+
+ex:assignedBy a owl:ObjectProperty ;
+    rdfs:domain ex:Assignment ;
+    rdfs:range ex:Person .
+
+ex:assignedTo a owl:ObjectProperty ;
+    rdfs:domain ex:Assignment ;
+    rdfs:range ex:Student .
+
+ex:date a owl:DatatypeProperty ;
+    rdfs:domain ex:Assessment,
+        ex:Assignment ;
+    rdfs:range xsd:date .
+
+ex:email a owl:DatatypeProperty ;
+    rdfs:domain ex:Student,
+        ex:Person ;
+    rdfs:range xsd:string .
+
+ex:enrolledIn a owl:ObjectProperty ;
+    rdfs:domain ex:Student ;
+    rdfs:range ex:Course .
+
+ex:hasAssessment a owl:ObjectProperty ;
+    rdfs:domain ex:Course ;
+    rdfs:range ex:Assessment .
+
+ex:hasAssignment a owl:ObjectProperty ;
+    rdfs:domain ex:Course ;
+    rdfs:range ex:Assignment .
+
+ex:hasLesson a owl:ObjectProperty ;
+    rdfs:domain ex:Course ;
+    rdfs:range ex:Lesson .
+
+ex:hasSubject a owl:ObjectProperty ;
+    rdfs:domain ex:Course ;
+    rdfs:range ex:Subject .
+
+ex:name a owl:DatatypeProperty ;
+    rdfs:domain ex:Assignment,
+        ex:Course,
+        ex:Institution,
+        ex:Lesson,
+        ex:Student,
+        ex:Subject,
+        ex:Person ;
+    rdfs:range xsd:string .
+
+ex:offersCourse a owl:ObjectProperty ;
+    rdfs:domain ex:Institution ;
+    rdfs:range ex:Course .
+
+ex:score a owl:DatatypeProperty ;
+    rdfs:domain ex:Assessment ;
+    rdfs:range xsd:decimal .
+
+ex:teaches a owl:ObjectProperty ;
+    rdfs:domain ex:Person ;
+    rdfs:range ex:Course .
+
+ex:title a owl:DatatypeProperty ;
+    rdfs:domain ex:Assignment,
+        ex:Course,
+        ex:Lesson ;
+    rdfs:range xsd:string .
+
+<http://example.org/ontology/Person> a owl:Class .
+
+ex:Institution a owl:Class .
+
+ex:Subject a owl:Class .
+
+ex:Assessment a owl:Class .
+
+ex:Lesson a owl:Class .
+
+ex:Student a owl:Class .
+
+ex:Person a owl:Class .
+
+ex:Assignment a owl:Class .
+
+ex:Course a owl:Class .
+

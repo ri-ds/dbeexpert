@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Ask natural language questions about Division of Biostatistics and Epidemiology faculty expertise."
+    />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Served from frontend/public, which Vite copies into dist at build time
+         and nginx then serves from the web root. -->
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/favicon.png" />
+    <title>Expertise Explorer</title>
+    <script>
+      // Apply the stored theme before first paint so there is no flash of the
+      // wrong palette. Keep this in sync with src/hooks/useTheme.ts.
+      (function () {
+        try {
+          var stored = window.localStorage.getItem('dbe.theme');
+          var mode = stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system';
+          var resolved =
+            mode === 'system'
+              ? window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+              : mode;
+          document.documentElement.setAttribute('data-theme', resolved);
+        } catch (err) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

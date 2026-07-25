@@ -1,0 +1,109 @@
+@prefix cs: <http://example.org/ontology/clinical-service#> .
+@prefix ex: <http://example.org/clinical#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:hasAffiliation a owl:ObjectProperty ;
+    rdfs:label "has affiliation" ;
+    rdfs:domain ex:Person ;
+    rdfs:range ex:Organization .
+
+ex:hasEmail a owl:DatatypeProperty ;
+    rdfs:label "has email" ;
+    rdfs:domain ex:Person ;
+    rdfs:range xsd:string .
+
+ex:hasName a owl:DatatypeProperty ;
+    rdfs:label "has name" ;
+    rdfs:domain ex:Person ;
+    rdfs:range xsd:string .
+
+<http://example.org/ontology/clinical-service> a owl:Ontology ;
+    rdfs:label "Clinical Service Ontology" ;
+    rdfs:comment "An ontology to describe clinical service activities of academic faculty." .
+
+cs:affiliatedWith a owl:ObjectProperty ;
+    rdfs:label "affiliated with" ;
+    rdfs:range cs:Affiliation .
+
+cs:affiliationType a owl:DatatypeProperty ;
+    rdfs:label "affiliation type" ;
+    rdfs:domain cs:Affiliation ;
+    rdfs:range xsd:string .
+
+cs:facilityName a owl:DatatypeProperty ;
+    rdfs:label "facility name" ;
+    rdfs:domain cs:HealthcareFacility ;
+    rdfs:range xsd:string .
+
+cs:hasRole a owl:ObjectProperty ;
+    rdfs:label "has role" ;
+    rdfs:range cs:ClinicalRole .
+
+cs:inSpecialty a owl:ObjectProperty ;
+    rdfs:label "in specialty" ;
+    rdfs:range cs:SpecialtyArea .
+
+cs:involvesProcedure a owl:ObjectProperty ;
+    rdfs:label "involves procedure" ;
+    rdfs:domain cs:ClinicalService ;
+    rdfs:range cs:Procedure .
+
+cs:locatedAt a owl:ObjectProperty ;
+    rdfs:label "located at" ;
+    rdfs:domain cs:ClinicalService ;
+    rdfs:range cs:HealthcareFacility .
+
+cs:performsService a owl:ObjectProperty ;
+    rdfs:label "performs service" ;
+    rdfs:range cs:ClinicalService .
+
+cs:procedureName a owl:DatatypeProperty ;
+    rdfs:label "procedure name" ;
+    rdfs:domain cs:Procedure ;
+    rdfs:range xsd:string .
+
+cs:roleTitle a owl:DatatypeProperty ;
+    rdfs:label "role title" ;
+    rdfs:domain cs:ClinicalRole ;
+    rdfs:range xsd:string .
+
+cs:serviceDate a owl:DatatypeProperty ;
+    rdfs:label "service date" ;
+    rdfs:domain cs:ClinicalService ;
+    rdfs:range xsd:date .
+
+cs:specialtyName a owl:DatatypeProperty ;
+    rdfs:label "specialty name" ;
+    rdfs:domain cs:SpecialtyArea ;
+    rdfs:range xsd:string .
+
+cs:Affiliation a owl:Class ;
+    rdfs:label "Affiliation" ;
+    rdfs:comment "A formal association between a faculty member and a healthcare facility." .
+
+cs:ClinicalRole a owl:Class ;
+    rdfs:label "Clinical Role" ;
+    rdfs:comment "A specific role held by a faculty member in the context of clinical service." .
+
+cs:HealthcareFacility a owl:Class ;
+    rdfs:label "Healthcare Facility" ;
+    rdfs:comment "A hospital, clinic, or other setting where clinical services are delivered." .
+
+cs:Procedure a owl:Class ;
+    rdfs:label "Procedure" ;
+    rdfs:comment "A medical or clinical procedure performed as part of service delivery." .
+
+cs:SpecialtyArea a owl:Class ;
+    rdfs:label "Specialty Area" ;
+    rdfs:comment "A medical specialty such as cardiology, neurology, or pediatrics." .
+
+ex:Person a owl:Class ;
+    rdfs:label "Person" ;
+    rdfs:comment "A person involved in clinical settings, such as patients, clinicians, or researchers." .
+
+cs:ClinicalService a owl:Class ;
+    rdfs:label "Clinical Service" ;
+    rdfs:comment "A clinical activity performed by a faculty member in a healthcare context." .
+

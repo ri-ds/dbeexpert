@@ -1,0 +1,75 @@
+@prefix ex: <http://example.org/university#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:awardedBy a owl:ObjectProperty ;
+    rdfs:comment "Links a degree to the university that awarded it." ;
+    rdfs:domain ex:Degree ;
+    rdfs:range ex:University .
+
+ex:degreeName a owl:DatatypeProperty ;
+    rdfs:comment "The official name of the degree (e.g., PhD, MSc)." ;
+    rdfs:domain ex:Degree ;
+    rdfs:range xsd:string .
+
+ex:endYear a owl:DatatypeProperty ;
+    rdfs:comment "The year the degree was completed." ;
+    rdfs:domain ex:Degree ;
+    rdfs:range xsd:gYear .
+
+ex:facultyName a owl:DatatypeProperty ;
+    rdfs:comment "The name of the Person." ;
+    rdfs:domain ex:Person ;
+    rdfs:range xsd:string .
+
+ex:fieldName a owl:DatatypeProperty ;
+    rdfs:comment "The name of the academic discipline." ;
+    rdfs:domain ex:FieldOfStudy ;
+    rdfs:range xsd:string .
+
+ex:hasDegree a owl:ObjectProperty ;
+    rdfs:comment "Links a person to a degree they have earned." ;
+    rdfs:domain ex:Person ;
+    rdfs:range ex:Degree .
+
+ex:hasEducation a owl:ObjectProperty ;
+    rdfs:comment "Links a person to their educational qualifications." ;
+    rdfs:domain ex:Person ;
+    rdfs:range ex:Education .
+
+ex:inField a owl:ObjectProperty ;
+    rdfs:comment "Specifies the field of study for a degree." ;
+    rdfs:domain ex:Degree ;
+    rdfs:range ex:FieldOfStudy .
+
+ex:startYear a owl:DatatypeProperty ;
+    rdfs:comment "The year the degree program was started." ;
+    rdfs:domain ex:Degree ;
+    rdfs:range xsd:gYear .
+
+ex:universityName a owl:DatatypeProperty ;
+    rdfs:comment "The official name of the university." ;
+    rdfs:domain ex:University ;
+    rdfs:range xsd:string .
+
+ex:Person a owl:Class ;
+    rdfs:label "Person" ;
+    rdfs:comment "An individual who may hold educational qualifications." .
+
+ex:Person a owl:Class ;
+    rdfs:label "Person" ;
+    rdfs:comment "A person who is part of the academic staff at a university." .
+
+ex:FieldOfStudy a owl:Class ;
+    rdfs:label "Field of Study" ;
+    rdfs:comment "An area of academic specialization." .
+
+ex:University a owl:Class ;
+    rdfs:label "University" ;
+    rdfs:comment "An academic institution where degrees are awarded." .
+
+ex:Degree a owl:Class ;
+    rdfs:label "Degree" ;
+    rdfs:comment "An academic degree earned by a faculty member." .
+

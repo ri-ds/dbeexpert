@@ -1,0 +1,34 @@
+# Secrets
+.env
+.env.local
+*.env
+!.env.example
+
+# The Neo4j dump is 163 MB, far past what Git should carry.
+dump/
+*.dump
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Legacy Streamlit app runtime state
+dbe_streamlit_app_2/conversation_history.json
+dbe_streamlit_app_2/previous_faculty.json
+dbe_streamlit_app_2.zip

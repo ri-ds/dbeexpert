@@ -1,0 +1,121 @@
+name: dbeexpert
+
+# ---------------------------------------------------------------------------
+# DBE Faculty Expertise Explorer
+#
+#   neo4j-load  one shot, restores dump/neo4j.dump into the data volume, then
+#               writes a marker file so later runs skip the restore
+#   neo4j       the graph database, Enterprise because the dump uses the block
+#               storage format which Community cannot read
+#   backend     FastAPI, owns all OpenAI and Neo4j access
+#   frontend    nginx serving the built React app and proxying /api to backend
+#
+# Start with:  docker compose up -d --build
+# ---------------------------------------------------------------------------
+
+services:
+  neo4j-load:
+    image: neo4j:${NEO4J_IMAGE_TAG:-2026.06-enterprise}
+    container_name: dbe-neo4j-load
+    environment:
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: ${NEO4J_ACCEPT_LICENSE_AGREEMENT:-eval}
+    volumes:
+      - neo4j_data:/data
+      - ./dump:/dumps:ro
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -euo pipefail
+        if [ -f /data/.dbe-restored ]; then
+          echo "[load] Marker found at /data/.dbe-restored, database already restored. Skipping."
+          exit 0
+        fi
+        if [ ! -f /dumps/neo4j.dump ]; then
+          echo "[load] ERROR: dump/neo4j.dump not found."
+          echo "[load] Place the Neo4j dump at ./dump/neo4j.dump and try again."
+          exit 1
+        fi
+        echo "[load] Restoring dump/neo4j.dump into the 'neo4j' database."
+        neo4j-admin database load neo4j --from-path=/dumps --overwrite-destination=true
+        touch /data/.dbe-restored
+        echo "[load] Restore complete."
+    restart: "no"
+
+  neo4j:
+    image: neo4j:${NEO4J_IMAGE_TAG:-2026.06-enterprise}
+    container_name: dbe-neo4j
+    depends_on:
+      neo4j-load:
+        condition: service_completed_successfully
+    environment:
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: ${NEO4J_ACCEPT_LICENSE_AGREEMENT:-eval}
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-dbepassword123}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_security_procedures_allowlist: apoc.*
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP:-2G}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP:-2G}
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-1G}
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      # cypher-shell succeeding is the only reliable signal that the database is
+      # actually online and accepting queries, not merely that the port is open.
+      test:
+        - CMD-SHELL
+        - cypher-shell -u neo4j -p '${NEO4J_PASSWORD:-dbepassword123}' 'RETURN 1' >/dev/null 2>&1 || exit 1
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    image: dbeexpert-backend:latest
+    container_name: dbe-backend
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-dbepassword123}
+      NEO4J_DATABASE: neo4j
+      NEO4J_VECTOR_INDEX: ${NEO4J_VECTOR_INDEX:-text_embeddings}
+      NEO4J_FULLTEXT_INDEX: ${NEO4J_FULLTEXT_INDEX:-chunk_text_fulltext}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY must be set in .env}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-5-mini}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      OPENAI_EMBEDDING_DIMENSIONS: ${OPENAI_EMBEDDING_DIMENSIONS:-1536}
+      PIPELINE_MAX_CONCURRENCY: ${PIPELINE_MAX_CONCURRENCY:-10}
+      RETRIEVAL_TOP_K: ${RETRIEVAL_TOP_K:-100}
+      MAX_JUDGED_FACULTY: ${MAX_JUDGED_FACULTY:-24}
+      LLM_REQUEST_TIMEOUT: ${LLM_REQUEST_TIMEOUT:-120}
+      CYPHER_TIMEOUT_SECONDS: ${CYPHER_TIMEOUT_SECONDS:-30}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-21600}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    image: dbeexpert-frontend:latest
+    container_name: dbe-frontend
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
+  neo4j_logs:

@@ -1,0 +1,105 @@
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix ceterms: <https://credreg.net/ctdl/terms/> .
+
+#############################################
+# Classes
+#############################################
+
+ceterms:Person a owl:Class ;
+    rdfs:label "Person" ;
+    rdfs:comment "An individual who may earn credentials, hold positions, or participate in educational activities." .
+
+ceterms:Organization a owl:Class ;
+    rdfs:label "Organization" ;
+    rdfs:comment "An entity that offers credentials, employs people, or provides learning opportunities." .
+
+ceterms:Credential a owl:Class ;
+    rdfs:label "Credential" ;
+    rdfs:comment "A formal recognition such as a degree, diploma, certificate, or badge." .
+
+ceterms:Degree a owl:Class ;
+    rdfs:subClassOf ceterms:Credential ;
+    rdfs:label "Degree" ;
+    rdfs:comment "A credential awarded by an academic institution upon completion of a program." .
+
+ceterms:Certificate a owl:Class ;
+    rdfs:subClassOf ceterms:Credential ;
+    rdfs:label "Certificate" ;
+    rdfs:comment "A credential awarded for shorter academic or professional achievement." .
+
+ceterms:Position a owl:Class ;
+    rdfs:label "Position" ;
+    rdfs:comment "An academic or employment role held at an organization." .
+
+ceterms:CredentialAward a owl:Class ;
+    rdfs:label "Credential Award" ;
+    rdfs:comment "An instance of a credential being awarded to a person." .
+
+ceterms:LearningOpportunityProfile a owl:Class ;
+    rdfs:label "Learning Opportunity" ;
+    rdfs:comment "A learning activity or program provided by an organization." .
+
+#############################################
+# Object Properties
+#############################################
+
+ceterms:awardedBy a owl:ObjectProperty ;
+    rdfs:domain ceterms:CredentialAward ;
+    rdfs:range ceterms:Organization ;
+    rdfs:comment "The organization that awarded the credential." .
+
+ceterms:awardedTo a owl:ObjectProperty ;
+    rdfs:domain ceterms:CredentialAward ;
+    rdfs:range ceterms:Person ;
+    rdfs:comment "The person to whom the credential was awarded." .
+
+ceterms:credential a owl:ObjectProperty ;
+    rdfs:domain ceterms:CredentialAward ;
+    rdfs:range ceterms:Credential ;
+    rdfs:comment "The credential that was awarded." .
+
+ceterms:holdsPosition a owl:ObjectProperty ;
+    rdfs:domain ceterms:Person ;
+    rdfs:range ceterms:Position ;
+    rdfs:comment "Indicates a position held by a person." .
+
+ceterms:positionAt a owl:ObjectProperty ;
+    rdfs:domain ceterms:Position ;
+    rdfs:range ceterms:Organization ;
+    rdfs:comment "The organization where the position is held." .
+
+ceterms:offers a owl:ObjectProperty ;
+    rdfs:domain ceterms:Organization ;
+    rdfs:range ceterms:LearningOpportunityProfile ;
+    rdfs:comment "The organization offering a learning opportunity." .
+
+ceterms:teaches a owl:ObjectProperty ;
+    rdfs:domain ceterms:Person ;
+    rdfs:range ceterms:LearningOpportunityProfile ;
+    rdfs:comment "The person teaching or delivering the learning opportunity." .
+
+#############################################
+# Datatype Properties
+#############################################
+
+ceterms:name a owl:DatatypeProperty ;
+    rdfs:domain ceterms:Person ;
+    rdfs:range rdfs:Literal ;
+    rdfs:comment "The full name of the person." .
+
+ceterms:credentialName a owl:DatatypeProperty ;
+    rdfs:domain ceterms:Credential ;
+    rdfs:range rdfs:Literal ;
+    rdfs:comment "The name of the credential." .
+
+ceterms:positionTitle a owl:DatatypeProperty ;
+    rdfs:domain ceterms:Position ;
+    rdfs:range rdfs:Literal ;
+    rdfs:comment "The title or role name of the position." .
+
+ceterms:offeredBy a owl:DatatypeProperty ;
+    rdfs:domain ceterms:LearningOpportunityProfile ;
+    rdfs:range rdfs:Literal ;
+    rdfs:comment "Text name of the organization offering a learning opportunity." .

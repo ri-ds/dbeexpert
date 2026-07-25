@@ -1,0 +1,75 @@
+@prefix deo: <http://example.org/distribution-of-effort#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+### Classes
+deo:Effort a rdf:Class .
+deo:Task a rdf:Class .
+deo:Person a rdf:Class .
+deo:Role a rdf:Class .
+deo:Team a rdf:Class .
+deo:Allocation a rdf:Class .
+
+### Object Properties (Relationships)
+deo:performsTask a rdf:Property ;
+    rdfs:domain deo:Person ;
+    rdfs:range deo:Task .
+
+deo:assignedToRole a rdf:Property ;
+    rdfs:domain deo:Person ;
+    rdfs:range deo:Role .
+
+deo:belongsToTeam a rdf:Property ;
+    rdfs:domain deo:Person ;
+    rdfs:range deo:Team .
+
+deo:hasEffortAllocation a rdf:Property ;
+    rdfs:domain deo:Task ;
+    rdfs:range deo:Allocation .
+
+deo:hasEffort a rdf:Property ;
+    rdfs:domain deo:Person ;
+    rdfs:range deo:Effort .
+
+### Datatype Properties (Literal Values)
+deo:effortAmount a rdf:Property ;
+    rdfs:domain deo:Effort ;
+    rdfs:range rdfs:Literal .
+
+deo:taskDescription a rdf:Property ;
+    rdfs:domain deo:Task ;
+    rdfs:range rdfs:Literal .
+
+deo:roleDescription a rdf:Property ;
+    rdfs:domain deo:Role ;
+    rdfs:range rdfs:Literal .
+
+### Individuals (Instances)
+deo:JohnDoe a deo:Person .
+deo:Task1 a deo:Task .
+deo:TeamA a deo:Team .
+deo:Leader a deo:Role .
+deo:Developer a deo:Role .
+deo:Effort1 a deo:Effort .
+
+deo:JohnDoe deo:effortAmount "15 hours" .
+deo:Task1 deo:taskDescription "Develop the user authentication module" .
+deo:Leader deo:roleDescription "Lead the team, coordinate tasks, ensure quality" .
+deo:Developer deo:roleDescription "Write code, debug issues, test functionalities" .
+deo:Effort1 deo:effortAmount "8 hours" .
+
+deo:JohnDoe deo:performsTask deo:Task1 .
+deo:JohnDoe deo:assignedToRole deo:Leader .
+deo:JohnDoe deo:belongsToTeam deo:TeamA .
+
+deo:Task1 deo:hasEffortAllocation deo:Effort1 .
+
+### Assertions (Facts)
+deo:JohnDoe deo:hasEffort "8 hours" .
+deo:JohnDoe deo:assignedToRole deo:Leader .
+deo:Developer deo:assignedToRole deo:Developer .
+
+deo:Task1 deo:hasEffortAllocation deo:Effort1 .
+
+deo:TeamA deo:belongsToTeam deo:JohnDoe .
+deo:TeamA deo:belongsToTeam deo:JaneDoe .

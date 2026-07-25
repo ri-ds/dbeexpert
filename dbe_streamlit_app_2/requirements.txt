@@ -1,0 +1,9 @@
+streamlit
+nest_asyncio
+requests
+pandas
+rdflib
+neo4j
+neo4j-graphrag[openai]
+openai
+python-dotenv

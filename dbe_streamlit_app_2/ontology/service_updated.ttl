@@ -1,0 +1,87 @@
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix tsl: <http://example.org/ontology/teach-service-leadership#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<http://example.org/ontology/Person> owl:equivalentClass <http://example.org/ontology/Person> .
+
+<http://example.org/ontology/teach-service-leadership> a owl:Ontology ;
+    rdfs:label "Faculty Service and Leadership Ontology" ;
+    rdfs:comment "An ontology to describe faculty service and leadership activities." .
+
+tsl:belongsTo a owl:ObjectProperty ;
+    rdfs:label "belongs to" ;
+    rdfs:domain tsl:Committee ;
+    rdfs:range tsl:Organization .
+
+tsl:contributedTo a owl:ObjectProperty ;
+    rdfs:label "contributed to" ;
+    rdfs:domain tsl:Person ;
+    rdfs:range tsl:Contribution .
+
+tsl:date a owl:DatatypeProperty ;
+    rdfs:label "date" ;
+    rdfs:domain tsl:ServiceActivity ;
+    rdfs:range xsd:date .
+
+tsl:description a owl:DatatypeProperty ;
+    rdfs:label "description" ;
+    rdfs:domain tsl:Contribution ;
+    rdfs:range xsd:string .
+
+tsl:heldRole a owl:ObjectProperty ;
+    rdfs:label "held role" ;
+    rdfs:domain tsl:Person ;
+    rdfs:range tsl:LeadershipRole .
+
+tsl:organizationName a owl:DatatypeProperty ;
+    rdfs:label "organization name" ;
+    rdfs:domain tsl:Organization ;
+    rdfs:range xsd:string .
+
+tsl:participatedIn a owl:ObjectProperty ;
+    rdfs:label "participated in" ;
+    rdfs:domain tsl:Person ;
+    rdfs:range tsl:ServiceActivity .
+
+tsl:positionTitle a owl:DatatypeProperty ;
+    rdfs:label "position title" ;
+    rdfs:domain tsl:LeadershipRole ;
+    rdfs:range xsd:string .
+
+tsl:roleInCommittee a owl:ObjectProperty ;
+    rdfs:label "role in committee" ;
+    rdfs:domain tsl:LeadershipRole ;
+    rdfs:range tsl:Committee .
+
+tsl:servedOn a owl:ObjectProperty ;
+    rdfs:label "served on" ;
+    rdfs:domain tsl:Person ;
+    rdfs:range tsl:Committee .
+
+<http://example.org/ontology/Person> a owl:Class .
+
+tsl:Contribution a owl:Class ;
+    rdfs:label "Contribution" ;
+    rdfs:comment "A documented contribution or outcome resulting from service or leadership activities." .
+
+tsl:Organization a owl:Class ;
+    rdfs:label "Organization" ;
+    rdfs:comment "An entity such as a university, professional body, or community group." .
+
+tsl:ServiceActivity a owl:Class ;
+    rdfs:label "Service Activity" ;
+    rdfs:comment "A professional service activity conducted by a faculty member." .
+
+tsl:Committee a owl:Class ;
+    rdfs:label "Committee" ;
+    rdfs:comment "A formal group responsible for specific tasks or governance within an institution." .
+
+tsl:LeadershipRole a owl:Class ;
+    rdfs:label "Leadership Role" ;
+    rdfs:comment "A leadership position held within a committee, department, or organization." .
+
+tsl:Person a owl:Class ;
+    rdfs:label "Faculty Member" ;
+    rdfs:comment "An academic staff member involved in teaching, research, and service." .
+

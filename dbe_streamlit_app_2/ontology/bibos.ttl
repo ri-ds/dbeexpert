@@ -1,0 +1,90 @@
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix bibo: <http://purl.org/ontology/bibo/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <http://example.org/ontology#> .
+@prefix vivo: <http://vivoweb.org/ontology/core#> .
+@prefix orcid: <https://orcid.org/> .
+@prefix pmid: <https://identifiers.org/pubmed:> .
+
+### Classes
+
+ex:Affiliation a owl:Class ;
+    rdfs:label "Affiliation" ;
+    rdfs:subClassOf foaf:Organization .
+
+ex:Journal a owl:Class ;
+    rdfs:label "Journal" ;
+    rdfs:subClassOf bibo:Periodical .
+
+ex:Conference a owl:Class ;
+    rdfs:label "Conference" ;
+    rdfs:subClassOf bibo:Conference .
+
+### Properties
+
+ex:affiliatedWith a owl:ObjectProperty ;
+    rdfs:domain ex:Person ;
+    rdfs:range ex:Affiliation ;
+    rdfs:label "affiliated with" .
+
+ex:publishedInJournal a owl:ObjectProperty ;
+    rdfs:domain ex:Publication ;
+    rdfs:range ex:Journal ;
+    rdfs:label "published in journal" .
+
+ex:presentedAtConference a owl:ObjectProperty ;
+    rdfs:domain ex:Publication ;
+    rdfs:range ex:Conference ;
+    rdfs:label "presented at conference" .
+
+### Sample Affiliations
+
+ex:MIT a ex:Affiliation ;
+    foaf:name "Massachusetts Institute of Technology" .
+
+ex:Stanford a ex:Affiliation ;
+    foaf:name "Stanford University" .
+
+### Sample Journals and Conferences
+
+ex:JWebSemantics a ex:Journal ;
+    foaf:name "Journal of Web Semantics" .
+
+ex:ISWC2024 a ex:Conference ;
+    foaf:name "International Semantic Web Conference 2024" ;
+    dcterms:date "2024-10-10"^^xsd:date .
+
+### Sample Persons with ORCID and Affiliations
+
+ex:AliceSmith a ex:Person ;
+    foaf:name "Alice Smith" ;
+    foaf:mbox <mailto:alice@example.org> ;
+    ex:affiliatedWith ex:MIT ;
+    foaf:account <https://orcid.org/0000-0001-2345-6789> .
+
+ex:BobJones a ex:Person ;
+    foaf:name "Bob Jones" ;
+    ex:affiliatedWith ex:Stanford ;
+    foaf:account <https://orcid.org/0000-0002-9876-5432> .
+
+### Publications with CrossRef and PubMed links
+
+ex:Paper1 a ex:Publication ;
+    dcterms:title "Semantic Web and Linked Data" ;
+    dcterms:issued "2024-06-01"^^xsd:date ;
+    bibo:doi "10.1234/example.doi1" ;
+    rdfs:seeAlso <https://doi.org/10.1234/example.doi1> , pmid:12345678 ;
+    ex:hasAuthor ex:AliceSmith, ex:BobJones ;
+    ex:publishedInJournal ex:JWebSemantics .
+
+ex:Paper2 a ex:Publication ;
+    dcterms:title "Graph Databases in Research" ;
+    dcterms:issued "2023-12-15"^^xsd:date ;
+    bibo:doi "10.1234/example.doi2" ;
+    rdfs:seeAlso <https://doi.org/10.1234/example.doi2> , pmid:98765432 ;
+    ex:hasAuthor ex:BobJones ;
+    ex:presentedAtConference ex:ISWC2024 .
