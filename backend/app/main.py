@@ -16,14 +16,17 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from . import db, llm, pipeline
+from . import db, feedback_store, llm, pipeline
 from .faculty import faculty_names
 from .ontology import agent_names
 from .schemas import (
+    FeedbackListResponse,
+    FeedbackRequest,
+    FeedbackResponse,
     HealthResponse,
     MetaResponse,
     Neo4jHealth,
@@ -31,6 +34,8 @@ from .schemas import (
     QueryRequest,
     QueryResponse,
     ResetRequest,
+    TitleRequest,
+    TitleResponse,
 )
 from .session import SessionStore
 from .settings import settings
@@ -99,9 +104,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception as exc:
             log.warning("Could not verify the embedding model: %s", exc)
 
+    # Feedback storage is optional infrastructure. If it is unavailable the
+    # Explorer must still answer questions, so a failure here is logged and the
+    # app carries on. Only the feedback endpoints will report an error.
+    try:
+        await asyncio.to_thread(feedback_store.init_schema)
+    except Exception as exc:
+        log.warning("Feedback storage is unavailable, the feature will be disabled: %s", exc)
+
     yield
 
     await asyncio.to_thread(db.close_driver)
+    await asyncio.to_thread(feedback_store.dispose_engine)
     log.info("Shut down cleanly")
 
 
@@ -264,10 +278,95 @@ async def query_stream(request: QueryRequest) -> StreamingResponse:
     )
 
 
+@app.post(f"{settings.api_prefix}/title", response_model=TitleResponse)
+async def title(request: TitleRequest) -> TitleResponse:
+    """
+    Name a conversation. Called once per conversation, never per message.
+
+    Returns an empty title rather than an error when generation fails, so a
+    naming problem can never interfere with asking questions.
+    """
+    if not settings.openai_configured:
+        return TitleResponse(title="")
+    return TitleResponse(title=await pipeline.generate_title(request.question))
+
+
 @app.post(f"{settings.api_prefix}/session/reset")
 async def reset_session(request: ResetRequest) -> dict[str, bool]:
     store.reset(request.sessionId)
     return {"ok": True}
+
+
+# ----------------------------------------------------------------------
+# Feedback
+# ----------------------------------------------------------------------
+
+@app.post(f"{settings.api_prefix}/feedback", response_model=FeedbackResponse)
+async def submit_feedback(request: FeedbackRequest) -> FeedbackResponse:
+    """
+    Record feedback about one answer.
+
+    When CCHMC SSO lands, `userName` should come from the authenticated session
+    rather than the request body, and the client should stop sending it.
+    """
+    try:
+        new_id = await asyncio.to_thread(
+            feedback_store.submit_feedback,
+            user_name=request.userName,
+            question=request.question,
+            answer=request.answer,
+            mode=request.mode,
+            intent=request.intent,
+            skill=request.skill,
+            comment=request.comment,
+            trace_snapshot=request.traceSnapshot,
+        )
+    except Exception as exc:
+        log.exception("Could not store feedback")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Feedback could not be saved because the feedback database is not "
+                "reachable. Your answer is unaffected. Please try again later."
+            ),
+        ) from exc
+
+    log.info("Stored feedback %s from %r", new_id, request.userName or "anonymous")
+    return FeedbackResponse(ok=True, id=new_id)
+
+
+async def require_admin(x_admin_password: str = Header(default="")) -> None:
+    """
+    Temporary gate on the admin view.
+
+    A shared password sent in a header, which is adequate only because this is a
+    placeholder. When CCHMC SSO is added this dependency should check a group
+    claim on the session instead, and the password should be deleted outright.
+    Compared with `secrets.compare_digest` to avoid leaking length by timing.
+    """
+    import secrets
+
+    expected = settings.admin_password
+    if not expected or not secrets.compare_digest(x_admin_password, expected):
+        raise HTTPException(status_code=401, detail="Incorrect admin password.")
+
+
+@app.get(
+    f"{settings.api_prefix}/admin/feedback",
+    response_model=FeedbackListResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def list_feedback(limit: int = 200, offset: int = 0) -> FeedbackListResponse:
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    try:
+        items, total = await asyncio.to_thread(feedback_store.list_feedback, limit, offset)
+    except Exception as exc:
+        log.exception("Could not read feedback")
+        raise HTTPException(
+            status_code=503, detail="The feedback database is not reachable."
+        ) from exc
+    return FeedbackListResponse(items=items, total=total)
 
 
 def _sse(event: str, payload: dict[str, Any]) -> bytes:

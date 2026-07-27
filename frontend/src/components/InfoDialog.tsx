@@ -1,18 +1,10 @@
-import { useCallback, useEffect, useId, useRef } from 'react';
+import { useId } from 'react';
+import { useDialog } from '../hooks/useDialog';
 import type { GraphStats } from '../types';
 import { CloseIcon } from './Icons';
 
 /** How many of the ranked label and relationship lists to show. */
 const TOP_N = 10;
-
-const FOCUSABLE =
-  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-function focusableIn(root: HTMLElement): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-    (node) => node.offsetParent !== null || node === root,
-  );
-}
 
 function formatCount(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -35,10 +27,11 @@ export interface InfoDialogProps {
  * Search mode descriptions deliberately live with the mode control under the
  * composer rather than here, so there is one place to read them.
  *
- * A modal dialog with the full keyboard contract. Escape and the backdrop close
- * it, focus moves in on open and is trapped while open, and the page behind it
- * cannot scroll. Returning focus to the trigger is the caller's job, since only
- * the caller knows which control opened it.
+ * A modal dialog with the full keyboard contract, which lives in useDialog and
+ * is shared with the feedback form. Escape and the backdrop close it, focus
+ * moves in on open and is trapped while open, and the page behind it cannot
+ * scroll. Returning focus to the trigger is the caller's job, since only the
+ * caller knows which control opened it.
  */
 export default function InfoDialog({
   faculty,
@@ -46,75 +39,8 @@ export default function InfoDialog({
   documentCategories,
   onClose,
 }: InfoDialogProps) {
-  const panelRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useDialog({ onClose });
   const titleId = useId();
-
-  // Move focus into the dialog. The panel itself takes it so the accessible
-  // name is announced before the content is read.
-  useEffect(() => {
-    panelRef.current?.focus();
-  }, []);
-
-  // Lock background scrolling for as long as the dialog is mounted.
-  useEffect(() => {
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = previous;
-    };
-  }, []);
-
-  const onKeyDown = useCallback(
-    (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== 'Tab') {
-        return;
-      }
-      const panel = panelRef.current;
-      if (panel === null) {
-        return;
-      }
-      const nodes = focusableIn(panel);
-      const first = nodes[0];
-      const last = nodes[nodes.length - 1];
-      if (first === undefined || last === undefined) {
-        event.preventDefault();
-        panel.focus();
-        return;
-      }
-
-      const active = document.activeElement;
-      // Focus can end up on the body after a click on static text, so pull it
-      // back rather than letting Tab walk into the page behind the dialog.
-      if (!(active instanceof HTMLElement) || !panel.contains(active)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-        return;
-      }
-      if (event.shiftKey && (active === first || active === panel)) {
-        event.preventDefault();
-        last.focus();
-        return;
-      }
-      if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    },
-    [onClose],
-  );
-
-  // Listened for on the document so the trap holds even if focus slips out.
-  useEffect(() => {
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [onKeyDown]);
 
   const labels = graph?.labels ?? [];
   const relTypes = graph?.relTypes ?? [];

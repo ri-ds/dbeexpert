@@ -15,11 +15,13 @@
     <title>Expertise Explorer</title>
     <script>
       // Apply the stored theme before first paint so there is no flash of the
-      // wrong palette. Keep this in sync with src/hooks/useTheme.ts.
+      // wrong palette. The default is light, not the system preference, so a
+      // first visit looks the same for everyone. Keep this in sync with
+      // src/hooks/useTheme.ts.
       (function () {
         try {
           var stored = window.localStorage.getItem('dbe.theme');
-          var mode = stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system';
+          var mode = stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'light';
           var resolved =
             mode === 'system'
               ? window.matchMedia('(prefers-color-scheme: dark)').matches

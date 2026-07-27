@@ -685,6 +685,66 @@ def _strip_tabular_prose(text: str) -> str:
 
 
 # ----------------------------------------------------------------------
+# Conversation naming
+# ----------------------------------------------------------------------
+
+# Longest slice of the question that is sent. A title needs the subject, not the
+# whole sentence, and this bounds the input cost no matter what someone pastes in.
+TITLE_INPUT_CHARS = 300
+# Hard ceiling on generated tokens. Four or five words never needs more.
+TITLE_MAX_TOKENS = 16
+# Longest title kept, so the sidebar and the header never have to ellipsise.
+TITLE_MAX_CHARS = 48
+
+_TITLE_SYSTEM = (
+    "You name chat conversations. Reply with a title of at most five words, "
+    "in sentence case, with no quotes and no trailing punctuation."
+)
+
+
+async def generate_title(question: str) -> str:
+    """
+    Name a conversation from its first question.
+
+    Deliberately cheap: one call per conversation, the question only with no
+    answer and no trace, a terse system prompt, a small non reasoning model, and
+    a hard token cap. Roughly 55 input tokens and at most 16 output tokens.
+
+    Never raises. On any failure the caller keeps the fallback title it already
+    has, because a conversation with a plain name is fine and a failed request
+    that breaks the chat is not.
+    """
+    trimmed = " ".join((question or "").split())[:TITLE_INPUT_CHARS]
+    if not trimmed:
+        return ""
+
+    try:
+        raw = await llm.chat(
+            _TITLE_SYSTEM,
+            trimmed,
+            model=settings.title_model,
+            max_completion_tokens=TITLE_MAX_TOKENS,
+        )
+    except Exception as exc:
+        log.warning("Title generation failed, keeping the fallback: %s", exc)
+        return ""
+
+    return _clean_title(raw)
+
+
+def _clean_title(raw: str) -> str:
+    """Strip the decoration models like to add around a title."""
+    title = " ".join((raw or "").split())
+    # Models sometimes answer with a quoted phrase, or prefix it with a label.
+    title = re.sub(r'^(title|chat title)\s*[:\-]\s*', "", title, flags=re.IGNORECASE)
+    title = title.strip().strip("\"'“”‘’")
+    title = title.rstrip(".,;:!")
+    if len(title) > TITLE_MAX_CHARS:
+        title = title[:TITLE_MAX_CHARS].rstrip()
+    return title
+
+
+# ----------------------------------------------------------------------
 # Orchestration
 # ----------------------------------------------------------------------
 

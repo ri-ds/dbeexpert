@@ -174,6 +174,17 @@ export function InfoIcon(props: IconProps) {
   );
 }
 
+/** Feedback: a speech bubble, used on the per answer feedback trigger. */
+export function FeedbackIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M20.5 13.5a2.5 2.5 0 0 1-2.5 2.5H9l-4.5 4V6a2.5 2.5 0 0 1 2.5-2.5h11A2.5 2.5 0 0 1 20.5 6z" />
+      <line x1="8.5" y1="8.5" x2="16" y2="8.5" />
+      <line x1="8.5" y1="11.5" x2="13" y2="11.5" />
+    </Svg>
+  );
+}
+
 export function TrashIcon(props: IconProps) {
   return (
     <Svg {...props}>

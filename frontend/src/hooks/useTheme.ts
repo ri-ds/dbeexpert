@@ -10,6 +10,16 @@ function isThemeMode(value: unknown): value is ThemeMode {
   return value === 'light' || value === 'dark' || value === 'system';
 }
 
+/**
+ * Light unless the user has chosen otherwise.
+ *
+ * Deliberately not `system`: the app should look the same on first visit for
+ * everyone, and light is the intended default. Choosing dark or system from the
+ * toggle is remembered and wins from then on. Keep this in sync with the inline
+ * bootstrap script in index.html.
+ */
+const DEFAULT_MODE: ThemeMode = 'light';
+
 function readStoredMode(): ThemeMode {
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY);
@@ -19,7 +29,7 @@ function readStoredMode(): ThemeMode {
   } catch {
     // Storage can be unavailable in private browsing modes.
   }
-  return 'system';
+  return DEFAULT_MODE;
 }
 
 function systemPrefersDark(): boolean {

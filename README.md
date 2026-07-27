@@ -5,34 +5,117 @@ Biostatistics and Epidemiology faculty knowledge graph. Ask questions in plain
 English, get answers grounded in the graph.
 
 ```
-Browser  ->  nginx (React SPA)  ->  FastAPI  ->  Neo4j  (43,915 nodes / 83,349 relationships)
+Browser  ->  nginx (React SPA)  ->  FastAPI  ->  Neo4j     (43,915 nodes / 83,349 relationships)
                                         |
-                                        +------->  OpenAI  (embeddings, reasoning, Cypher generation)
+                                        +------->  Postgres  (user feedback)
+                                        |
+                                        +------->  OpenAI    (embeddings, reasoning, Cypher generation)
 ```
 
-## Quick start
+## Running it on any machine
 
-Everything runs in Docker. You need Docker with at least 6 GB of memory
-available, and an OpenAI API key.
+The whole stack is containerised. Four services, one compose file, one shared
+network, all talking by Docker service name. Nothing depends on a path from the
+machine it was built on.
+
+Requirements: Docker with at least **6 GB** of memory available, and an OpenAI API
+key.
+
+### Two one-time steps per machine
+
+Both exist because the files involved cannot live in Git.
 
 ```bash
-cp .env.example .env    # then put your real OPENAI_API_KEY in it
+cp .env.example .env          # 1. then put your real OPENAI_API_KEY in it
 ```
-
-Place the Neo4j dump at `dump/neo4j.dump`, then:
 
 ```bash
-docker compose up -d --build
+mkdir -p dump                 # 2. the graph itself
+cp /path/to/your/neo4j.dump dump/neo4j.dump
 ```
 
-First start restores the 163 MB dump, which takes a minute or two. Watch it with
-`docker compose logs -f neo4j-load neo4j`. When the stack is healthy:
+The dump is **163 MB**, past what GitHub accepts and well past what Git should
+carry, so it is deliberately gitignored. It must be named exactly
+`neo4j.dump`, because `neo4j-admin` derives the target database name from the
+filename. If it is missing, the stack stops on the first service with printed
+instructions rather than failing obscurely.
+
+### Then, every time
+
+```bash
+docker compose down && docker compose up -d --build
+```
+
+That stops, rebuilds, and starts everything. It is safe to repeat: `down` without
+`-v` keeps the volumes, so the graph and the feedback data survive.
+
+First run takes a few minutes: it restores the dump, pulls Postgres and Neo4j, and
+builds two images. Later runs skip the restore and reuse layer caches.
 
 | Service | URL |
 | --- | --- |
 | Web app | http://localhost:8080 |
+| Feedback admin | http://localhost:8080/admin |
 | API docs | http://localhost:8011/api/docs |
 | Neo4j Browser | http://localhost:7474 |
+
+### Verifying it came up
+
+```bash
+docker compose ps
+```
+
+`neo4j`, `postgres`, and `backend` should read `healthy`, `frontend` should read
+`Up`, and `neo4j-load` should read `Exited (0)`. That last one is correct: it is a
+one-shot restore job, not a long-running service.
+
+```bash
+curl -s http://localhost:8080/api/health
+```
+
+Expect `"status":"ok"` with `neo4j.connected` true, `neo4j.nodes` 43915, and
+`openai.configured` true. A `degraded` status means the API key is missing or
+Neo4j is not up yet.
+
+Follow a slow first start with:
+
+```bash
+docker compose logs -f neo4j-load neo4j backend
+```
+
+### What is automatic
+
+| Concern | How it is handled |
+| --- | --- |
+| Service discovery | `bolt://neo4j:7687`, `postgres:5432`, `http://backend:8000`, all by service name on the `dbe` network. No `localhost` anywhere in the container config. |
+| Neo4j restore | The `neo4j-load` one-shot runs before Neo4j starts, restores the dump, and writes a `/data/.dbe-restored` marker so later runs skip it. Idempotent across any number of `down`/`up` cycles. |
+| Feedback schema | The backend creates the `feedback` table on startup. Idempotent, and it waits for Postgres to pass its healthcheck first. |
+| Data persistence | Named volumes `dbeexpert_neo4j_data`, `dbeexpert_neo4j_logs`, `dbeexpert_postgres_data`. |
+| Startup order | `neo4j-load` completes, then `neo4j` and `postgres` go healthy, then `backend`, then `frontend`. |
+| Static assets | The favicon and everything else are copied into the frontend image at build time, never read from the host. |
+| Secrets | `.env` is read by compose and gitignored. A missing `OPENAI_API_KEY` fails immediately with a message naming the variable. |
+
+### Starting over
+
+```bash
+docker compose down -v          # also drops the volumes
+docker compose up -d --build    # restores the dump again from ./dump
+```
+
+`make reset-db` does the same for just the databases.
+
+### Notes on the two schema decisions
+
+The Neo4j restore is a one-shot container rather than a documented manual step,
+so a new machine needs no `neo4j-admin` knowledge. The only thing it cannot do is
+supply the dump file itself.
+
+The Postgres `feedback` table is created by SQLAlchemy on backend startup rather
+than by a SQL file in `/docker-entrypoint-initdb.d`. Both work, and an init script
+only runs on first volume creation, but the deciding reason is that two
+definitions of the same table can drift apart. There is one source of truth in
+`feedback_store.py`. Introduce Alembic when a second table appears, or when a
+column has to change on data worth keeping.
 
 ## How a question is routed
 
@@ -114,6 +197,7 @@ backend/app/
   retrievers.py   hybrid and vector retrievers, result normalisation
   pipeline.py     classify, route, retrieve, judge, rank, extract, text to Cypher
   skills.py       hand written graph queries for factual questions
+  feedback_store.py  Postgres persistence for user feedback
   ontology.py     Turtle files to per agent schemas for domain routing
   faculty.py      the 20 name allow list
   session.py      per conversation state with TTL eviction
@@ -181,6 +265,44 @@ Indexes that matter:
 - `chunk_text_fulltext`, a fulltext index on `Chunk.text`.
 - `text_embeddings2`, a fulltext index on `Chunk.embedding`. This one is not
   useful, see the notes below.
+
+## Feedback
+
+Each answer carries a Feedback control beside "How this answer was produced".
+Opening it attaches the whole exchange automatically, so the reviewer gets the
+question, the rendered answer, the routing decision (mode, intent, skill), and
+the full trace with per faculty scores and rationales. The user only writes a
+comment, and optionally a name.
+
+Submissions land in Postgres:
+
+```
+feedback(id, user_name, question, answer, mode, intent, skill,
+         comment, trace_snapshot JSONB, created_at)
+```
+
+Read them at **http://localhost:8080/admin**, gated by `ADMIN_PASSWORD`
+(default `admin123`).
+
+Three deliberate choices:
+
+1. **Postgres, not Neo4j.** The graph is rebuilt by loading a dump. Anything a
+   user typed must never sit somewhere a restore could overwrite.
+2. **Feedback failure never breaks a query.** The write lives on its own
+   endpoint and the pipeline does not touch it. Verified by stopping Postgres
+   mid session: questions still answered normally, health still `ok`, and the
+   feedback endpoint returned a clean 503 rather than a 500. The pool recovers on
+   its own when Postgres returns, with no backend restart.
+3. **`trace_snapshot` is JSONB**, because the useful debugging signal is the
+   judge's per faculty scores and rationales, which are a few KB and worth
+   keeping queryable.
+
+Both the name field and the shared admin password are **temporary** and sized to
+be removed. When CCHMC SSO arrives, `user_name` should be filled from the
+authenticated session rather than the request body, and the admin view should be
+gated on a group claim instead of a password. The column stays either way, so
+only the writer changes. The schema is created on startup; introduce Alembic as
+soon as a second table appears or a column needs changing on data worth keeping.
 
 ## Neo4j licensing, please read
 

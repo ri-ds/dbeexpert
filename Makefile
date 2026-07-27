@@ -9,6 +9,7 @@ up: ## Build and start the whole stack
 	docker compose up -d --build
 	@echo ""
 	@echo "  Web app        http://localhost:$${FRONTEND_PORT:-8080}"
+	@echo "  Feedback admin http://localhost:$${FRONTEND_PORT:-8080}/admin"
 	@echo "  API docs       http://localhost:$${BACKEND_PORT:-8011}/api/docs"
 	@echo "  Neo4j Browser  http://localhost:$${NEO4J_HTTP_PORT:-7474}"
 
@@ -40,6 +41,14 @@ smoke: ## Run one real question through the API
 
 shell-neo4j: ## Open cypher-shell against the running database
 	docker compose exec neo4j cypher-shell -u neo4j -p $${NEO4J_PASSWORD:-dbepassword123}
+
+shell-pg: ## Open psql against the feedback database
+	docker compose exec postgres psql -U $${POSTGRES_USER:-dbe} -d $${POSTGRES_DB:-dbefeedback}
+
+feedback: ## Print all feedback submissions as JSON
+	@curl -s -H "X-Admin-Password: $${ADMIN_PASSWORD:-admin123}" \
+		http://localhost:$${BACKEND_PORT:-8011}/api/admin/feedback \
+		| python3 -m json.tool || echo "Backend is not responding yet."
 
 reset-db: ## Delete the database volume so the next start restores the dump again
 	docker compose down

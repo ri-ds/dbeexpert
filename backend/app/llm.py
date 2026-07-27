@@ -66,8 +66,15 @@ async def chat(
     *,
     json_mode: bool = False,
     model: str | None = None,
+    max_completion_tokens: int | None = None,
 ) -> str:
-    """Single turn completion. Returns the raw assistant text."""
+    """
+    Single turn completion. Returns the raw assistant text.
+
+    `max_completion_tokens` is left unset for the pipeline calls, which need room
+    to finish their JSON, and set only where the output length is known to be
+    tiny, such as naming a conversation.
+    """
     client = get_client()
     kwargs: dict[str, Any] = {
         "model": model or settings.chat_model,
@@ -78,9 +85,24 @@ async def chat(
     }
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    if max_completion_tokens is not None:
+        kwargs["max_completion_tokens"] = max_completion_tokens
 
     async with get_semaphore():
         response = await client.chat.completions.create(**kwargs)
+
+    # Log usage for the capped calls, which exist specifically to be cheap. This
+    # makes the cost of conversation naming verifiable rather than asserted.
+    if max_completion_tokens is not None:
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            log.info(
+                "capped call to %s used %s prompt + %s completion = %s tokens",
+                kwargs["model"],
+                getattr(usage, "prompt_tokens", "?"),
+                getattr(usage, "completion_tokens", "?"),
+                getattr(usage, "total_tokens", "?"),
+            )
 
     content = response.choices[0].message.content
     return (content or "").strip()

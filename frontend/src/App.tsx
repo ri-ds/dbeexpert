@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { describeError, fetchHealth, fetchMeta, isAbortError, streamQuery } from './api';
+import {
+  describeError,
+  fetchHealth,
+  fetchMeta,
+  generateTitle,
+  isAbortError,
+  streamQuery,
+} from './api';
 import ChatThread from './components/ChatThread';
 import Composer, { type ComposerHandle } from './components/Composer';
-import { AlertIcon, InfoIcon, MenuIcon, PlusIcon } from './components/Icons';
+import { AlertIcon, InfoIcon, MenuIcon } from './components/Icons';
 import InfoDialog from './components/InfoDialog';
 import Sidebar from './components/Sidebar';
 import StatusPill, { type HealthState } from './components/StatusPill';
@@ -49,6 +56,7 @@ export default function App() {
     activeId,
     messages,
     updateMessages,
+    setGeneratedTitle,
     newConversation,
     selectConversation,
     deleteConversation,
@@ -68,6 +76,10 @@ export default function App() {
   );
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+
+  // Conversations already named, or already being named. Naming costs a model
+  // call, so it happens at most once per conversation for the life of the tab.
+  const titledRef = useRef<Set<string>>(new Set());
 
   const abortRef = useRef<AbortController | null>(null);
   const startedAtRef = useRef<number>(0);
@@ -105,6 +117,16 @@ export default function App() {
       window.removeEventListener('resize', sync);
     };
   }, []);
+
+  // Conversations restored from storage that already carry a generated name are
+  // marked here, so reopening an old chat never spends a call renaming it.
+  useEffect(() => {
+    for (const conversation of conversations) {
+      if (conversation.titleSource === 'generated') {
+        titledRef.current.add(conversation.id);
+      }
+    }
+  }, [conversations]);
 
   /* ---------------------------------------------------------------- */
   /* Metadata and health                                               */
@@ -354,6 +376,17 @@ export default function App() {
               mode: response.mode ?? message.mode,
               pending: false,
             }));
+            // Name the conversation once, after its first answer lands. The ref
+            // guard means a second question never triggers a second call, and
+            // the request carries only this question.
+            if (!titledRef.current.has(conversationId)) {
+              titledRef.current.add(conversationId);
+              void generateTitle(question).then((generated) => {
+                if (generated.length > 0) {
+                  setGeneratedTitle(conversationId, generated);
+                }
+              });
+            }
           },
           onError: (event) => {
             outcome.failure = event.message;
@@ -416,7 +449,16 @@ export default function App() {
           setBusy(false);
         });
     },
-    [activeId, applyStage, busy, finishStages, mode, patchMessage, updateMessages],
+    [
+      activeId,
+      applyStage,
+      busy,
+      finishStages,
+      mode,
+      patchMessage,
+      setGeneratedTitle,
+      updateMessages,
+    ],
   );
 
   const stop = useCallback(() => {
@@ -541,14 +583,22 @@ export default function App() {
   /* Derived values                                                    */
   /* ---------------------------------------------------------------- */
 
+  // The active mode is resolved inside Composer, which is the only place that
+  // shows it now that the header carries the conversation name instead.
   const modes = meta?.modes && meta.modes.length > 0 ? meta.modes : FALLBACK_MODES;
-  const activeMode = useMemo(
-    () => modes.find((item) => item.id === mode) ?? modes[0] ?? FALLBACK_MODES[0],
-    [mode, modes],
-  );
   const faculty = meta?.faculty ?? [];
   const graph = meta?.graph ?? null;
   const documentCategories = meta?.documentCategories ?? [];
+
+  // The conversation's own name, once it has one. An untouched chat has no
+  // content to name yet, so it falls back to the app name.
+  const headerTitle = useMemo(() => {
+    const active = conversations.find((conversation) => conversation.id === activeId);
+    if (active === undefined || active.messages.length === 0) {
+      return 'Expertise Explorer';
+    }
+    return active.title.trim().length > 0 ? active.title : 'Expertise Explorer';
+  }, [activeId, conversations]);
 
   const warning = useMemo(() => {
     if (healthState === 'offline') {
@@ -630,23 +680,16 @@ export default function App() {
             </button>
           ) : null}
 
+          {/* The header names the conversation you are in, not the app. The app
+              name is in the sidebar and the retrieval mode is on the composer,
+              so repeating either here would only crowd it out. */}
           <div className="topbar__titles">
-            <h1 className="topbar__title">Expertise Explorer</h1>
-            <p className="topbar__sub">{activeMode?.label ?? 'Hybrid graph search'}</p>
+            <h1 className="topbar__title">{headerTitle}</h1>
           </div>
 
           <div className="topbar__right">
-            {/* The label text is hidden by CSS on narrow viewports, so the
-                accessible name is set explicitly and always present. */}
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm topbar__new"
-              onClick={newChat}
-              aria-label="New chat"
-            >
-              <PlusIcon size={13} />
-              <span>New chat</span>
-            </button>
+            {/* No New chat button here. The sidebar already has one, and on
+                narrow viewports the sidebar is reachable from the menu button. */}
             <button
               type="button"
               className="icon-btn"

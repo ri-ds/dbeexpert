@@ -52,6 +52,11 @@ class Settings:
     # ---- OpenAI ----
     openai_api_key: str = field(default_factory=lambda: _env("OPENAI_API_KEY"))
     chat_model: str = field(default_factory=lambda: _env("OPENAI_CHAT_MODEL", "gpt-5-mini"))
+    # Naming a conversation is a four word job, so it gets its own cheap model.
+    # Deliberately not a reasoning model: those bill hidden reasoning tokens that
+    # a small max_completion_tokens cap cannot bound, which would cost more for a
+    # title than for some real answers.
+    title_model: str = field(default_factory=lambda: _env("OPENAI_TITLE_MODEL", "gpt-4o-mini"))
     embedding_model: str = field(
         default_factory=lambda: _env("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     )
@@ -88,6 +93,20 @@ class Settings:
 
     # ---- Session state ----
     session_ttl_s: int = field(default_factory=lambda: _env_int("SESSION_TTL_SECONDS", 60 * 60 * 6))
+
+    # ---- Feedback storage ----
+    # Postgres, kept separate from Neo4j because the graph is rebuilt from a dump
+    # and user submitted data must never sit somewhere a restore could overwrite.
+    database_url: str = field(
+        default_factory=lambda: _env(
+            "DATABASE_URL",
+            "postgresql+psycopg://dbe:dbefeedback@postgres:5432/dbefeedback",
+        )
+    )
+    # Temporary gate on the admin feedback view. This is a placeholder until
+    # CCHMC SSO lands, at which point the admin view should be behind a group
+    # claim rather than a shared password.
+    admin_password: str = field(default_factory=lambda: _env("ADMIN_PASSWORD", "admin123"))
 
     # ---- Paths ----
     ontology_dir: Path = field(

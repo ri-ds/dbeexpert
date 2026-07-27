@@ -38,10 +38,21 @@ const FALLBACK_TITLE = 'New conversation';
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
 
+/**
+ * Where a conversation's title came from.
+ *
+ * `derived` is the local fallback, the first message cut short, and it is
+ * refreshed as messages change. `generated` is a real name from the backend and
+ * is never overwritten, which is what keeps naming to one model call per
+ * conversation rather than one per message.
+ */
+export type TitleSource = 'derived' | 'generated';
+
 export interface Conversation {
   /** Also sent to the backend as the session id. */
   id: string;
   title: string;
+  titleSource: TitleSource;
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
@@ -280,10 +291,14 @@ function normalizeConversation(value: unknown): Conversation | null {
 
   const createdAt = asFiniteNumber(record['createdAt']) ?? Date.now();
   const storedTitle = asString(record['title'])?.trim() ?? '';
+  // A generated title survives a reload, so returning to an old conversation
+  // never spends another call renaming something already named.
+  const generated = record['titleSource'] === 'generated' && storedTitle.length > 0;
 
   return {
     id,
     title: storedTitle.length > 0 ? storedTitle : deriveTitle(messages),
+    titleSource: generated ? 'generated' : 'derived',
     createdAt,
     updatedAt: asFiniteNumber(record['updatedAt']) ?? createdAt,
     messages,
@@ -393,6 +408,7 @@ function createConversation(): Conversation {
   return {
     id: createId(),
     title: FALLBACK_TITLE,
+    titleSource: 'derived',
     createdAt: now,
     updatedAt: now,
     messages: [],
@@ -435,6 +451,11 @@ export interface UseConversationsResult {
     conversationId: string,
     updater: (current: ChatMessage[]) => ChatMessage[],
   ) => void;
+  /**
+   * Apply a generated name. Marks the conversation so its title is never
+   * recomputed and never regenerated, including after a reload.
+   */
+  setGeneratedTitle: (conversationId: string, title: string) => void;
   /** Start a fresh conversation, or reuse the newest one if it is still empty. */
   newConversation: () => void;
   selectConversation: (id: string) => void;
@@ -466,7 +487,9 @@ export function useConversations(): UseConversationsResult {
         list[index] = {
           ...target,
           messages,
-          title: deriveTitle(messages),
+          // Only the local fallback tracks the messages. A generated name is
+          // left alone, which is what keeps naming to one call per conversation.
+          title: target.titleSource === 'generated' ? target.title : deriveTitle(messages),
           updatedAt: Date.now(),
         };
         return { conversations: sortConversations(list), activeId: current.activeId };
@@ -474,6 +497,28 @@ export function useConversations(): UseConversationsResult {
     },
     [],
   );
+
+  const setGeneratedTitle = useCallback((conversationId: string, title: string) => {
+    const cleaned = title.trim();
+    if (cleaned.length === 0) {
+      return;
+    }
+    setState((current) => {
+      const index = current.conversations.findIndex(
+        (conversation) => conversation.id === conversationId,
+      );
+      const target = index === -1 ? undefined : current.conversations[index];
+      // Already named, so do not churn the list or overwrite it.
+      if (target === undefined || target.titleSource === 'generated') {
+        return current;
+      }
+      const list = current.conversations.slice();
+      list[index] = { ...target, title: cleaned, titleSource: 'generated' };
+      // Renaming is not activity, so updatedAt is left alone and the ordering
+      // of the history does not jump around.
+      return { conversations: list, activeId: current.activeId };
+    });
+  }, []);
 
   const newConversation = useCallback(() => {
     setState((current) => {
@@ -534,6 +579,7 @@ export function useConversations(): UseConversationsResult {
     activeId: state.activeId,
     messages: active?.messages ?? EMPTY_MESSAGES,
     updateMessages,
+    setGeneratedTitle,
     newConversation,
     selectConversation,
     deleteConversation,

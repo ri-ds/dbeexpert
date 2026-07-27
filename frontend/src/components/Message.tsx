@@ -1,7 +1,10 @@
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { buildFeedbackContext } from '../feedback';
 import type { ChatMessage } from '../types';
 import CypherBlock from './CypherBlock';
 import FacultyCard from './FacultyCard';
-import { AlertIcon, PeopleIcon, SparkIcon } from './Icons';
+import FeedbackDialog from './FeedbackDialog';
+import { AlertIcon, CheckIcon, FeedbackIcon, PeopleIcon, SparkIcon } from './Icons';
 import PipelineTrace from './PipelineTrace';
 import ResultTable from './ResultTable';
 import StageIndicator from './StageIndicator';
@@ -22,9 +25,20 @@ export interface MessageProps {
   message: ChatMessage;
   /** Elapsed milliseconds, only meaningful while the message is pending. */
   elapsedMs: number;
+  /**
+   * Text of the user message this answer replies to. The message itself does not
+   * carry the question, and feedback is useless without it.
+   */
+  question?: string | null;
 }
 
-export default function Message({ message, elapsedMs }: MessageProps) {
+/**
+ * Dispatch on role. The assistant branch is a separate component because an
+ * assistant message can be turned into an error message in place, keeping its
+ * id, and that has to unmount the assistant subtree rather than change which
+ * hooks run for the same instance.
+ */
+export default function Message({ message, elapsedMs, question = null }: MessageProps) {
   if (message.role === 'user') {
     return (
       <article className="msg msg--user" aria-label="Your question">
@@ -61,10 +75,46 @@ export default function Message({ message, elapsedMs }: MessageProps) {
     );
   }
 
+  return (
+    <AssistantMessage message={message} elapsedMs={elapsedMs} question={question} />
+  );
+}
+
+interface AssistantMessageProps {
+  message: ChatMessage;
+  elapsedMs: number;
+  question: string | null;
+}
+
+function AssistantMessage({ message, elapsedMs, question }: AssistantMessageProps) {
   const response = message.response;
   const faculty = response?.faculty ?? [];
   const cypher = response?.cypher ?? null;
   const answerText = response?.answerText ?? null;
+
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackSent, setFeedbackSent] = useState(false);
+  const feedbackBtnRef = useRef<HTMLButtonElement | null>(null);
+
+  // Feedback is only offered on a finished answer. A pending message has nothing
+  // to report on yet, and a message with no response has nothing to attach.
+  const canGiveFeedback = !message.pending && response !== null;
+
+  const feedbackContext = useMemo(
+    () => (feedbackOpen ? buildFeedbackContext(question, response) : null),
+    [feedbackOpen, question, response],
+  );
+
+  const closeFeedback = useCallback(() => {
+    setFeedbackOpen(false);
+    // Return focus to the trigger, which the dialog cannot know about.
+    window.setTimeout(() => feedbackBtnRef.current?.focus(), 0);
+  }, []);
+
+  const onFeedbackSubmitted = useCallback(() => {
+    setFeedbackSent(true);
+    closeFeedback();
+  }, [closeFeedback]);
 
   return (
     <article className="msg msg--assistant" aria-label="Answer">
@@ -154,15 +204,48 @@ export default function Message({ message, elapsedMs }: MessageProps) {
           </p>
         ) : null}
 
+        {/* Footer row: how the answer was produced on the left, feedback on the
+            right. The disclosure keeps its own collapsed by default behaviour. */}
         {!message.pending ? (
-          <PipelineTrace
-            trace={response?.trace ?? null}
-            timings={response?.timings ?? null}
-            fallbackStages={message.stages}
-            intent={response?.intent ?? null}
-          />
+          <div className="msg__foot">
+            <PipelineTrace
+              trace={response?.trace ?? null}
+              timings={response?.timings ?? null}
+              fallbackStages={message.stages}
+              intent={response?.intent ?? null}
+            />
+            {canGiveFeedback ? (
+              <button
+                type="button"
+                className="msg__feedback"
+                ref={feedbackBtnRef}
+                onClick={() => setFeedbackOpen(true)}
+                aria-haspopup="dialog"
+                aria-expanded={feedbackOpen}
+              >
+                <FeedbackIcon size={13} />
+                <span>Feedback</span>
+              </button>
+            ) : null}
+            {feedbackSent ? (
+              <p className="msg__feedback-note" role="status">
+                <span aria-hidden="true">
+                  <CheckIcon size={13} />
+                </span>
+                <span>Feedback sent. Thank you, it has been saved for review.</span>
+              </p>
+            ) : null}
+          </div>
         ) : null}
       </div>
+
+      {feedbackOpen && feedbackContext !== null ? (
+        <FeedbackDialog
+          context={feedbackContext}
+          onClose={closeFeedback}
+          onSubmitted={onFeedbackSubmitted}
+        />
+      ) : null}
     </article>
   );
 }

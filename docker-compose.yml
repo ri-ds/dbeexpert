@@ -1,16 +1,26 @@
 name: dbeexpert
 
 # ---------------------------------------------------------------------------
-# DBE Faculty Expertise Explorer
+# DBE Faculty Expertise Explorer, whole stack.
 #
 #   neo4j-load  one shot, restores dump/neo4j.dump into the data volume, then
 #               writes a marker file so later runs skip the restore
 #   neo4j       the graph database, Enterprise because the dump uses the block
 #               storage format which Community cannot read
-#   backend     FastAPI, owns all OpenAI and Neo4j access
+#   postgres    user feedback, kept apart from the graph so a graph restore can
+#               never overwrite anything a user wrote
+#   backend     FastAPI, owns all OpenAI, Neo4j, and Postgres access
 #   frontend    nginx serving the built React app and proxying /api to backend
 #
-# Start with:  docker compose up -d --build
+# Everything talks over the dbe network by Docker service name, never localhost,
+# so the stack is identical on any machine. Data lives in named volumes and
+# survives `docker compose down`, which does not remove volumes.
+#
+#   docker compose down && docker compose up -d --build
+#
+# Requires two things per machine, both documented in the README:
+#   1. .env holding OPENAI_API_KEY  (copy .env.example)
+#   2. ./dump/neo4j.dump            (163 MB, too large for Git)
 # ---------------------------------------------------------------------------
 
 services:
@@ -32,8 +42,24 @@ services:
           exit 0
         fi
         if [ ! -f /dumps/neo4j.dump ]; then
-          echo "[load] ERROR: dump/neo4j.dump not found."
-          echo "[load] Place the Neo4j dump at ./dump/neo4j.dump and try again."
+          echo ""
+          echo "==============================================================="
+          echo " The Neo4j dump is missing, so there is no graph to serve."
+          echo ""
+          echo " Expected file:  ./dump/neo4j.dump"
+          echo ""
+          echo " The dump is 163 MB, far past what Git should carry, so it is"
+          echo " deliberately not in the repository. Copy it in once per machine:"
+          echo ""
+          echo "     mkdir -p dump"
+          echo "     cp /path/to/your/neo4j.dump dump/neo4j.dump"
+          echo ""
+          echo " The file must be named exactly neo4j.dump, because neo4j-admin"
+          echo " derives the target database name from the filename."
+          echo ""
+          echo " Then run:  docker compose up -d --build"
+          echo "==============================================================="
+          echo ""
           exit 1
         fi
         echo "[load] Restoring dump/neo4j.dump into the 'neo4j' database."
@@ -75,6 +101,28 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  # Feedback storage. Deliberately separate from Neo4j: the graph is rebuilt by
+  # loading a dump, and user submitted data must never live somewhere a restore
+  # could overwrite.
+  postgres:
+    image: postgres:16-alpine
+    container_name: dbe-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dbefeedback}
+      POSTGRES_USER: ${POSTGRES_USER:-dbe}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dbefeedback}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-dbe} -d ${POSTGRES_DB:-dbefeedback}
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
@@ -82,6 +130,8 @@ services:
     container_name: dbe-backend
     depends_on:
       neo4j:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     environment:
       NEO4J_URI: bolt://neo4j:7687
@@ -100,6 +150,9 @@ services:
       LLM_REQUEST_TIMEOUT: ${LLM_REQUEST_TIMEOUT:-120}
       CYPHER_TIMEOUT_SECONDS: ${CYPHER_TIMEOUT_SECONDS:-30}
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-21600}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dbe}:${POSTGRES_PASSWORD:-dbefeedback}@postgres:5432/${POSTGRES_DB:-dbefeedback}
+      # Temporary gate on the admin feedback view, replaced by SSO group checks later.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
@@ -117,5 +170,14 @@ services:
     restart: unless-stopped
 
 volumes:
+  # Named, so `docker compose down` keeps them and `up` reattaches. Removing
+  # them is an explicit act: `docker compose down -v`, or `make reset-db`.
   neo4j_data:
   neo4j_logs:
+  postgres_data:
+
+networks:
+  # Declared explicitly rather than relying on the implicit default, so the
+  # shared network the services resolve each other on is visible in the file.
+  default:
+    name: dbe

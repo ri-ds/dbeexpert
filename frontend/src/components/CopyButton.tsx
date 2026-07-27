@@ -32,11 +32,15 @@ export interface CopyButtonProps {
   text: string;
   /** Accessible label, for example "Copy Cypher query". */
   label: string;
-  /** Show the word "Copy" next to the icon. */
-  withText?: boolean;
 }
 
-export default function CopyButton({ text, label, withText = true }: CopyButtonProps) {
+/**
+ * Icon only. The clipboard glyph is understood without a caption, and the label
+ * text was competing with the content it sat beside. The accessible name and the
+ * live region still carry the meaning for screen readers, and the title gives
+ * sighted users a tooltip.
+ */
+export default function CopyButton({ text, label }: CopyButtonProps) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const timer = useRef<number | null>(null);
 
@@ -59,19 +63,20 @@ export default function CopyButton({ text, label, withText = true }: CopyButtonP
     });
   }, [text]);
 
-  const caption = state === 'copied' ? 'Copied' : state === 'failed' ? 'Failed' : 'Copy';
+  const spoken =
+    state === 'copied' ? `${label}, copied` : state === 'failed' ? `${label}, failed` : label;
 
   return (
     <button
       type="button"
-      className="copy-btn"
+      className="copy-btn copy-btn--icon"
       onClick={onClick}
-      aria-label={state === 'copied' ? `${label}, copied` : label}
+      aria-label={spoken}
+      title={state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : 'Copy'}
     >
-      {state === 'copied' ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
-      {withText ? <span>{caption}</span> : null}
+      {state === 'copied' ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
       <span className="sr-only" role="status" aria-live="polite">
-        {state === 'copied' ? 'Copied to clipboard' : ''}
+        {state === 'copied' ? 'Copied to clipboard' : state === 'failed' ? 'Copy failed' : ''}
       </span>
     </button>
   );

@@ -7,6 +7,24 @@ import Message from './Message';
 /** Distance from the bottom, in pixels, still treated as "at the bottom". */
 const STICK_THRESHOLD = 96;
 
+/**
+ * Text of the nearest user message above the given position, which is the
+ * question an assistant message answers. Searching backwards rather than
+ * assuming index minus one holds even if an error message sits between them.
+ */
+function precedingQuestion(messages: ChatMessage[], index: number): string | null {
+  for (let at = index - 1; at >= 0; at -= 1) {
+    const candidate = messages[at];
+    if (candidate === undefined) {
+      continue;
+    }
+    if (candidate.role === 'user') {
+      return candidate.text;
+    }
+  }
+  return null;
+}
+
 export interface ChatThreadProps {
   messages: ChatMessage[];
   facultyCount: number;
@@ -78,8 +96,16 @@ export default function ChatThread({
           {isEmpty ? (
             <EmptyState facultyCount={facultyCount} onPick={onPickExample} />
           ) : (
-            messages.map((message) => (
-              <Message key={message.id} message={message} elapsedMs={elapsedMs} />
+            messages.map((message, index) => (
+              <Message
+                key={message.id}
+                message={message}
+                elapsedMs={elapsedMs}
+                // The thread is a flat list of alternating messages, so the
+                // question an answer replies to is the nearest user message
+                // above it. Only the thread knows that, so it is passed down.
+                question={precedingQuestion(messages, index)}
+              />
             ))
           )}
           <div className="thread__tail" aria-hidden="true" />

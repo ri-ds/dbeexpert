@@ -1,4 +1,7 @@
 import type {
+  FeedbackListResponse,
+  FeedbackRequest,
+  FeedbackResponse,
   HealthResponse,
   MetaResponse,
   QueryRequest,
@@ -6,6 +9,8 @@ import type {
   StageEvent,
   StreamErrorEvent,
   StreamHandlers,
+  TitleRequest,
+  TitleResponse,
   TraceEvent,
 } from './types';
 
@@ -70,6 +75,19 @@ async function readErrorBody(response: Response): Promise<string> {
           return value;
         }
       }
+      // FastAPI reports request validation failures as a list of problems
+      // rather than a string. Without this the raw JSON reached the screen.
+      if (Array.isArray(record['detail'])) {
+        const problems = record['detail']
+          .map((entry) => {
+            const item = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
+            return typeof item['msg'] === 'string' ? item['msg'] : '';
+          })
+          .filter((message) => message.trim().length > 0);
+        if (problems.length > 0) {
+          return problems.join('. ');
+        }
+      }
     }
   } catch {
     // Body was not JSON, fall through and use the raw text.
@@ -117,6 +135,99 @@ export async function postQuery(
     throw new ApiError(await readErrorBody(response), response.status);
   }
   return (await response.json()) as QueryResponse;
+}
+
+/* ------------------------------------------------------------------ */
+/* Feedback                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * POST /api/feedback
+ *
+ * A 422 means the comment was blank, which the form prevents, and a 503 means
+ * the feedback database is unreachable. Neither says anything about the answer
+ * the feedback is about, so callers must not present a failure here as a
+ * problem with the answer itself.
+ */
+export async function submitFeedback(
+  body: FeedbackRequest,
+  signal?: AbortSignal,
+): Promise<FeedbackResponse> {
+  const response = await fetch(`${API_BASE}/feedback`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new ApiError(await readErrorBody(response), response.status);
+  }
+  return (await response.json()) as FeedbackResponse;
+}
+
+/**
+ * POST /api/title
+ *
+ * Name a conversation from its first question. Call this once per conversation,
+ * never per message.
+ *
+ * Resolves to an empty string rather than throwing on any failure, because a
+ * conversation keeping its plain fallback name is not worth surfacing an error
+ * for. Callers should treat an empty result as "keep what you have".
+ */
+export async function generateTitle(
+  question: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  try {
+    const response = await fetch(`${API_BASE}/title`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ question } satisfies TitleRequest),
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) {
+      return '';
+    }
+    const parsed = (await response.json()) as TitleResponse;
+    return typeof parsed.title === 'string' ? parsed.title.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * GET /api/admin/feedback
+ *
+ * Gated on a shared password sent in the X-Admin-Password header, which is a
+ * placeholder until CCHMC SSO lands. A wrong or missing password is a 401 and
+ * callers are expected to discard the password they hold when they see one.
+ */
+export async function fetchAdminFeedback(
+  password: string,
+  limit: number,
+  offset: number,
+  signal?: AbortSignal,
+): Promise<FeedbackListResponse> {
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const response = await fetch(`${API_BASE}/admin/feedback?${query.toString()}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      'X-Admin-Password': password,
+    },
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new ApiError(await readErrorBody(response), response.status);
+  }
+  return (await response.json()) as FeedbackListResponse;
 }
 
 /* ------------------------------------------------------------------ */

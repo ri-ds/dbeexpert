@@ -158,3 +158,79 @@ class MetaResponse(BaseModel):
 
 class ResetRequest(BaseModel):
     sessionId: str = Field(min_length=1, max_length=128)
+
+
+class TitleRequest(BaseModel):
+    """
+    Name a conversation from its first question.
+
+    Only the question is accepted. The answer and the trace are deliberately not
+    part of this contract, because sending them would multiply the input cost of
+    what is a four word job.
+    """
+
+    question: str = Field(min_length=1, max_length=2000)
+
+
+class TitleResponse(BaseModel):
+    # Empty when generation failed, which tells the client to keep the fallback
+    # title it already derived locally.
+    title: str = ""
+
+
+# ----------------------------------------------------------------------
+# Feedback
+# ----------------------------------------------------------------------
+
+class FeedbackRequest(BaseModel):
+    """
+    One piece of feedback about one answer.
+
+    Everything except `comment` and `userName` is context the client already has
+    from the answer it is reporting on, so the user never retypes anything.
+
+    `userName` is supplied by the client today. Once CCHMC SSO is in place it
+    should come from the authenticated session instead and this field should be
+    dropped from the request body.
+    """
+
+    comment: str = Field(min_length=1, max_length=8000)
+    userName: str = Field(default="", max_length=200)
+    question: str = Field(default="", max_length=8000)
+    answer: str = Field(default="", max_length=40000)
+    mode: str | None = Field(default=None, max_length=40)
+    intent: str | None = Field(default=None, max_length=40)
+    skill: str | None = Field(default=None, max_length=80)
+    # Whole trace plus timings, questionType, agent, sessionId, and any Cypher.
+    traceSnapshot: dict[str, Any] | None = None
+
+    @field_validator("comment")
+    @classmethod
+    def comment_not_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("comment cannot be blank")
+        return cleaned
+
+
+class FeedbackResponse(BaseModel):
+    ok: bool
+    id: int
+
+
+class FeedbackItem(BaseModel):
+    id: int
+    userName: str
+    question: str
+    answer: str
+    mode: str | None = None
+    intent: str | None = None
+    skill: str | None = None
+    comment: str
+    traceSnapshot: dict[str, Any] | None = None
+    createdAt: str
+
+
+class FeedbackListResponse(BaseModel):
+    items: list[FeedbackItem] = Field(default_factory=list)
+    total: int = 0

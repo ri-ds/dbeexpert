@@ -159,6 +159,82 @@ export interface QueryResponse {
 }
 
 /* ------------------------------------------------------------------ */
+/* POST /api/title                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Only the first question is sent. The answer and the trace are deliberately
+ * excluded, since a four word title does not need them and they would dominate
+ * the input cost.
+ */
+export interface TitleRequest {
+  question: string;
+}
+
+export interface TitleResponse {
+  /** Empty when generation failed, meaning keep the locally derived title. */
+  title: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* POST /api/feedback                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Everything except `comment` is context the client already holds from the
+ * answer being reported on, so the reviewer gets the full picture without the
+ * user retyping anything.
+ *
+ * `userName` is self reported today. Once CCHMC SSO is in place the backend will
+ * take the user from the authenticated session and this field goes away, along
+ * with the name input in FeedbackDialog and the helpers in feedback.ts.
+ */
+export interface FeedbackRequest {
+  /** Required, non blank, at most 8000 characters. */
+  comment: string;
+  userName: string;
+  question: string;
+  answer: string;
+  mode: QueryMode | null;
+  intent: string | null;
+  skill: string | null;
+  /** Whole trace plus timings, question type, agent, session, and any Cypher. */
+  traceSnapshot: Record<string, unknown> | null;
+}
+
+export interface FeedbackResponse {
+  ok: boolean;
+  id: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* GET /api/admin/feedback                                             */
+/* ------------------------------------------------------------------ */
+
+/** One stored submission as the admin view reads it back. */
+export interface FeedbackItem {
+  id: number;
+  /** Empty when the submitter stayed anonymous. */
+  userName: string;
+  question: string;
+  answer: string;
+  mode: string | null;
+  intent: string | null;
+  skill: string | null;
+  comment: string;
+  traceSnapshot: Record<string, unknown> | null;
+  /** ISO 8601 with an offset, for example 2026-07-25T03:09:26.207408+00:00. */
+  createdAt: string;
+}
+
+export interface FeedbackListResponse {
+  /** Newest first, as ordered by the backend. */
+  items: FeedbackItem[];
+  /** Rows in the table, not rows in this page. */
+  total: number;
+}
+
+/* ------------------------------------------------------------------ */
 /* Server sent event payloads                                          */
 /* ------------------------------------------------------------------ */
 
