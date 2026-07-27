@@ -8,8 +8,9 @@
       content="Ask natural language questions about Division of Biostatistics and Epidemiology faculty expertise."
     />
     <meta name="color-scheme" content="light dark" />
-    <!-- Served from frontend/public, which Vite copies into dist at build time
-         and nginx then serves from the web root. -->
+    <!-- Served from frontend/public, which Vite copies into dist at build time.
+         Vite rewrites these to include the configured base, so they resolve under
+         a sub path such as /expert/ as well as at the root. -->
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/favicon.png" />
     <title>Expertise Explorer</title>

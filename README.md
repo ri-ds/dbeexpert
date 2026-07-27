@@ -12,6 +12,20 @@ Browser  ->  nginx (React SPA)  ->  FastAPI  ->  Neo4j     (43,915 nodes / 83,34
                                         +------->  OpenAI    (embeddings, reasoning, Cypher generation)
 ```
 
+## Hosting behind a reverse proxy
+
+See **[deploy/README.md](deploy/README.md)** for the full deployment guide and
+**[deploy/nginx-expert.conf](deploy/nginx-expert.conf)** for the nginx blocks.
+
+The short version: set `BASE_PATH=/expert/` in the server's `.env`, keep
+`BIND_HOST=127.0.0.1` so only nginx can reach the containers, and deploy with
+`git pull && docker compose down && docker compose up -d --build`.
+
+`BASE_PATH` is the single source of truth for the sub path. Vite bakes it into
+every asset URL and exposes it as `import.meta.env.BASE_URL`, which is where the
+API base and the admin route are derived from, so no source file hardcodes a
+prefix. It is a build argument, so changing it requires `--build`.
+
 ## Running it on any machine
 
 The whole stack is containerised. Four services, one compose file, one shared

@@ -12,6 +12,13 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 COPY . .
 
+# Where the app will be mounted, for example /expert/ behind a reverse proxy.
+# This is baked into the bundle at build time because Vite has to rewrite every
+# asset URL, so changing it means rebuilding the image, not restarting it.
+# Defaults to the root so a plain build keeps working unchanged.
+ARG BASE_PATH=/
+ENV BASE_PATH=${BASE_PATH}
+
 RUN npm run build
 
 # Stage 2: serve the bundle with nginx.

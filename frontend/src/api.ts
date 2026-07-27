@@ -15,11 +15,15 @@ import type {
 } from './types';
 
 /**
- * All requests use relative paths under /api. The Vite dev server proxies them
- * to http://localhost:8000 and nginx does the same in production, so no base
- * URL or environment variable is ever needed.
+ * Every request goes through one API base, derived from where the app is mounted.
+ *
+ * `import.meta.env.BASE_URL` is whatever `base` was at build time, set from the
+ * BASE_PATH build argument. Mounted at the root it is `/`, giving `/api`. Mounted
+ * at `/expert/` it gives `/expert/api`, which the reverse proxy routes to the
+ * backend. Deriving it in one place is what keeps the sub path out of every call
+ * site, so moving the app only means rebuilding with a different BASE_PATH.
  */
-const API_BASE = '/api';
+const API_BASE = `${(import.meta.env.BASE_URL || '/').replace(/\/+$/, '')}/api`;
 
 /** Error carrying the HTTP status when the backend responds with a failure. */
 export class ApiError extends Error {

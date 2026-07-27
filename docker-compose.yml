@@ -19,8 +19,18 @@ name: dbeexpert
 #   docker compose down && docker compose up -d --build
 #
 # Requires two things per machine, both documented in the README:
-#   1. .env holding OPENAI_API_KEY  (copy .env.example)
+#   1. .env holding the secrets     (copy .env.example)
 #   2. ./dump/neo4j.dump            (163 MB, too large for Git)
+#
+# Hosting behind a reverse proxy:
+#   * Set BASE_PATH to the sub path, for example /expert/. It is a build argument
+#     because Vite bakes it into every asset URL, so it takes effect on rebuild.
+#   * Only frontend and backend publish ports, and only on 127.0.0.1, so nginx on
+#     the host is the single way in. Neo4j and Postgres stay on the internal
+#     network with no host binding at all.
+#   * Every secret is required rather than defaulted. A missing value fails the
+#     command with the variable named, instead of silently booting with a
+#     well known password.
 # ---------------------------------------------------------------------------
 
 services:
@@ -76,16 +86,32 @@ services:
         condition: service_completed_successfully
     environment:
       NEO4J_ACCEPT_LICENSE_AGREEMENT: ${NEO4J_ACCEPT_LICENSE_AGREEMENT:-eval}
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-dbepassword123}
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
       NEO4J_PLUGINS: '["apoc"]'
       NEO4J_dbms_security_procedures_unrestricted: apoc.*
       NEO4J_dbms_security_procedures_allowlist: apoc.*
       NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP:-2G}
       NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP:-2G}
       NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-1G}
-    ports:
-      - "${NEO4J_HTTP_PORT:-7474}:7474"
-      - "${NEO4J_BOLT_PORT:-7687}:7687"
+      # Read by the healthcheck from inside the container, so the password is not
+      # interpolated into the healthcheck command that `docker compose config`
+      # prints.
+      #
+      # The name must NOT begin with NEO4J_. This image turns every NEO4J_* env
+      # var into a neo4j.conf setting, so NEO4J_HEALTHCHECK_PASSWORD became the
+      # setting "HEALTHCHECK.PASSWORD" and strict validation refused to start the
+      # server at all.
+      HEALTHCHECK_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+    # No published ports. Only the backend talks to Neo4j and it does so over the
+    # compose network, so binding 7474 and 7687 on the host would expose the Neo4j
+    # browser and the Bolt protocol to anything that can reach the server. To
+    # inspect the graph, tunnel in instead:
+    #   ssh -L 7474:localhost:7474 -L 7687:localhost:7687 <server>
+    # having temporarily added a 127.0.0.1 binding, or use `make shell-neo4j`,
+    # which runs cypher-shell inside the container and needs no ports at all.
+    expose:
+      - "7474"
+      - "7687"
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -94,7 +120,7 @@ services:
       # actually online and accepting queries, not merely that the port is open.
       test:
         - CMD-SHELL
-        - cypher-shell -u neo4j -p '${NEO4J_PASSWORD:-dbepassword123}' 'RETURN 1' >/dev/null 2>&1 || exit 1
+        - cypher-shell -u neo4j -p "$$HEALTHCHECK_PASSWORD" 'RETURN 1' >/dev/null 2>&1 || exit 1
       interval: 15s
       timeout: 10s
       retries: 20
@@ -110,7 +136,10 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-dbefeedback}
       POSTGRES_USER: ${POSTGRES_USER:-dbe}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dbefeedback}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    # No published ports. Only the backend uses this, over the compose network.
+    expose:
+      - "5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -136,7 +165,7 @@ services:
     environment:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USERNAME: neo4j
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-dbepassword123}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
       NEO4J_DATABASE: neo4j
       NEO4J_VECTOR_INDEX: ${NEO4J_VECTOR_INDEX:-text_embeddings}
       NEO4J_FULLTEXT_INDEX: ${NEO4J_FULLTEXT_INDEX:-chunk_text_fulltext}
@@ -150,23 +179,34 @@ services:
       LLM_REQUEST_TIMEOUT: ${LLM_REQUEST_TIMEOUT:-120}
       CYPHER_TIMEOUT_SECONDS: ${CYPHER_TIMEOUT_SECONDS:-30}
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-21600}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dbe}:${POSTGRES_PASSWORD:-dbefeedback}@postgres:5432/${POSTGRES_DB:-dbefeedback}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dbe}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-dbefeedback}
       # Temporary gate on the admin feedback view, replaced by SSO group checks later.
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set in .env}
+      # In production the API is same origin, since nginx serves /expert/api/ from
+      # the same host as the app, so CORS is not exercised at all. Set correctly
+      # anyway for any non browser or cross origin caller.
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+    # Bound to the loopback interface, so the only way in is through the reverse
+    # proxy. Published at all only so nginx on the host can reach it.
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "${BIND_HOST:-127.0.0.1}:${BACKEND_PORT:-8011}:8000"
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
+      args:
+        # Where the app is mounted. Baked into every asset URL and read at runtime
+        # as import.meta.env.BASE_URL, so this one value drives the sub path.
+        # Changing it requires a rebuild, which the deploy command already does.
+        BASE_PATH: ${BASE_PATH:-/}
     image: dbeexpert-frontend:latest
     container_name: dbe-frontend
     depends_on:
       - backend
+    # Loopback only, same reasoning as the backend.
     ports:
-      - "${FRONTEND_PORT:-8080}:80"
+      - "${BIND_HOST:-127.0.0.1}:${FRONTEND_PORT:-8080}:80"
     restart: unless-stopped
 
 volumes:
