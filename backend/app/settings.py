@@ -57,8 +57,17 @@ class Settings:
     # a small max_completion_tokens cap cannot bound, which would cost more for a
     # title than for some real answers.
     title_model: str = field(default_factory=lambda: _env("OPENAI_TITLE_MODEL", "gpt-4o-mini"))
+    # MUST match the model that wrote Chunk.embedding in the graph, which is
+    # text-embedding-ada-002. That is the neo4j_graphrag default, and the original
+    # app never passed a model, so the stored vectors are ada-002 vectors.
+    #
+    # Do not "upgrade" this. text-embedding-3-small is also 1536 dimensions, so the
+    # startup width check still passes, but it is a different embedding space:
+    # measured on this graph, top cosine similarity collapses from 0.92 to 0.52 and
+    # the faculty ranking changes. Changing this safely means re-embedding all
+    # 8,375 Chunk nodes.
     embedding_model: str = field(
-        default_factory=lambda: _env("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+        default_factory=lambda: _env("OPENAI_EMBEDDING_MODEL", "text-embedding-ada-002")
     )
     # The stored vectors are 1536 dimensions. A query embedding of any other
     # width will silently return meaningless neighbours, so this is asserted

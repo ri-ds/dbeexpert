@@ -367,11 +367,34 @@ Everything lives in `.env`. The values worth knowing about:
 | --- | --- | --- |
 | `OPENAI_API_KEY` | none | Required. The backend refuses queries without it. |
 | `OPENAI_CHAT_MODEL` | `gpt-5-mini` | Used for classification, judging, extraction, and Cypher generation. |
-| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Must produce 1536 dimensions to match the stored vectors. |
+| `OPENAI_EMBEDDING_MODEL` | `text-embedding-ada-002` | **Must be the model that wrote the vectors.** See the warning below. |
 | `MAX_JUDGED_FACULTY` | 24 | The main cost control. See below. |
 | `RETRIEVAL_TOP_K` | 100 | Chunks pulled per retrieval pass. |
 | `PIPELINE_MAX_CONCURRENCY` | 10 | Concurrent OpenAI calls. |
 | `NEO4J_FULLTEXT_INDEX` | `chunk_text_fulltext` | See the fixes below. |
+
+### The embedding model is not a free choice
+
+`OPENAI_EMBEDDING_MODEL` **must be `text-embedding-ada-002`**, because that is
+what wrote the `Chunk.embedding` vectors in the dump. The original app never
+passed a model, and `ada-002` is the `neo4j-graphrag` default.
+
+This bit me, so it is worth stating precisely. Switching to
+`text-embedding-3-small` looks harmless: it is also 1536 dimensions, so the
+startup width check still passes and nothing errors. But it is a **different
+embedding space**. Measured on this graph with the same question:
+
+| Query embedding | Top cosine similarity | Top faculty |
+| --- | --- | --- |
+| `text-embedding-ada-002` | **0.9224** | correct |
+| `text-embedding-3-small` | **0.5253** | different, only 3 of top 5 overlap |
+
+End to end, "list DBE faculty with expertise in emergency medicine" went from the
+correct four faculty to two unrelated names. **A matching vector width does not
+mean a matching model, which is exactly how this hides.** The startup check
+verifies width only; there is no way to detect the model from the stored vectors.
+
+Changing the embedding model safely means re-embedding all 8,375 `Chunk` nodes.
 
 ### Retrieval is coverage complete
 
