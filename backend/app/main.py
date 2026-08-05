@@ -16,7 +16,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -333,6 +333,55 @@ async def submit_feedback(request: FeedbackRequest) -> FeedbackResponse:
 
     log.info("Stored feedback %s from %r", new_id, request.userName or "anonymous")
     return FeedbackResponse(ok=True, id=new_id)
+
+
+# ----------------------------------------------------------------------
+# TEMPORARY diagnostic. Delete once identity is wired up.
+# ----------------------------------------------------------------------
+
+# Header names that a reverse proxy or SAML service provider might use to pass
+# the signed in user through to an application.
+_IDENTITY_HEADERS = (
+    "x-forwarded-user", "x-forwarded-email", "x-forwarded-preferred-username",
+    "x-remote-user", "remote-user", "x-authenticated-user", "x-user", "x-username",
+    "x-auth-request-user", "x-auth-request-email", "x-auth-request-preferred-username",
+    "eppn", "x-eppn", "mail", "x-mail", "displayname", "x-displayname",
+    "uid", "x-uid", "samaccountname", "x-samaccountname", "sn", "givenname",
+    "x-shib-eppn", "x-shib-mail", "x-shib-displayname", "x-shib-uid",
+    "shib-eppn", "shib-mail", "shib-identity-provider",
+    "x-forwarded-groups", "x-auth-request-groups", "ismemberof", "x-ismemberof",
+)
+
+# Never echoed, because they carry the session itself.
+_SECRET_HEADERS = ("cookie", "authorization", "proxy-authorization", "x-admin-password")
+
+
+@app.get(f"{settings.api_prefix}/whoami")
+async def whoami(request: Request) -> dict[str, Any]:
+    """
+    Show whether the reverse proxy tells this app who the signed in user is.
+
+    Deliberately safe to open in a browser: it lists the NAMES of every header
+    received, but only reveals VALUES for known identity headers. Cookies and
+    authorization headers are never echoed, only reported as present.
+
+    This exists to answer one question, whether per user chat history is possible
+    without asking IT for a change. Delete it once identity is wired up.
+    """
+    incoming = {k.lower(): v for k, v in request.headers.items()}
+
+    identity = {k: v for k, v in incoming.items() if k in _IDENTITY_HEADERS}
+    return {
+        "identityFound": bool(identity),
+        "identityHeaders": identity,
+        "allHeaderNames": sorted(incoming.keys()),
+        "secretsPresentButHidden": [h for h in _SECRET_HEADERS if h in incoming],
+        "note": (
+            "identityFound true means per user history can be built now. "
+            "False means the proxy authenticates but does not forward the user, "
+            "and IT need to add one header."
+        ),
+    }
 
 
 async def require_admin(x_admin_password: str = Header(default="")) -> None:
