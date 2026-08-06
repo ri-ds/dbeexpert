@@ -179,6 +179,56 @@ class TitleResponse(BaseModel):
 
 
 # ----------------------------------------------------------------------
+# Identity and chat history
+# ----------------------------------------------------------------------
+
+class MeResponse(BaseModel):
+    """
+    Who the caller is, as far as the app can tell.
+
+    `authenticated` false means the reverse proxy let the request through but did
+    not forward the user, which is the current state. The client then keeps its
+    existing browser local history rather than asking the server for any.
+    """
+
+    authenticated: bool = False
+    userId: str | None = None
+    displayName: str | None = None
+    # True when server side history is usable, that is authenticated AND the
+    # database is reachable.
+    historyEnabled: bool = False
+    # Where to send the user to sign out. Null when not configured, in which
+    # case the client hides the Sign out button rather than offering a dead link.
+    logoutUrl: str | None = None
+
+
+class ConversationSummary(BaseModel):
+    id: str
+    title: str = ""
+    titleSource: str = "derived"
+    createdAt: str
+    updatedAt: str
+    messageCount: int = 0
+
+
+class ConversationDetail(ConversationSummary):
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ConversationListResponse(BaseModel):
+    conversations: list[ConversationSummary] = Field(default_factory=list)
+
+
+class SaveConversationRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    title: str = Field(default="", max_length=300)
+    titleSource: Literal["derived", "generated"] = "derived"
+    # The frontend's ChatMessage list, stored as given. Capped so one runaway
+    # conversation cannot fill the database.
+    messages: list[dict[str, Any]] = Field(default_factory=list, max_length=400)
+
+
+# ----------------------------------------------------------------------
 # Feedback
 # ----------------------------------------------------------------------
 

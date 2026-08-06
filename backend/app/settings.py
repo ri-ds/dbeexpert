@@ -56,7 +56,7 @@ class Settings:
     # Deliberately not a reasoning model: those bill hidden reasoning tokens that
     # a small max_completion_tokens cap cannot bound, which would cost more for a
     # title than for some real answers.
-    title_model: str = field(default_factory=lambda: _env("OPENAI_TITLE_MODEL", "gpt-4o-mini"))
+    title_model: str = field(default_factory=lambda: _env("OPENAI_TITLE_MODEL", "gpt-4o"))
     # MUST match the model that wrote Chunk.embedding in the graph, which is
     # text-embedding-ada-002. That is the neo4j_graphrag default, and the original
     # app never passed a model, so the stored vectors are ada-002 vectors.
@@ -102,6 +102,24 @@ class Settings:
 
     # ---- Session state ----
     session_ttl_s: int = field(default_factory=lambda: _env_int("SESSION_TTL_SECONDS", 60 * 60 * 6))
+
+    # ---- Identity ----
+    # Header the reverse proxy uses to tell us who the signed in user is. The SSO
+    # layer in front authenticates every request but does not currently forward
+    # the user, so until IT add this the app runs anonymously exactly as before.
+    # Several common alternatives are also accepted, see identity.py.
+    auth_user_header: str = field(
+        default_factory=lambda: _env("AUTH_USER_HEADER", "X-Forwarded-User")
+    )
+    # Where the Sign out button sends the user. Empty by default and the button is
+    # hidden until it is set, because a logout link that 404s is worse than none.
+    #
+    # Deliberately not guessed: the CCHMC service provider does not expose logout
+    # at any of the usual SimpleSAMLphp paths. Every candidate returned 404 while
+    # the auth endpoint returned 303, so the real URL has to come from IT. Note
+    # that SAML single logout is often left disabled on purpose, since it can sign
+    # the user out of every other application too.
+    auth_logout_url: str = field(default_factory=lambda: _env("AUTH_LOGOUT_URL", ""))
 
     # ---- Feedback storage ----
     # Postgres, kept separate from Neo4j because the graph is rebuilt from a dump

@@ -1,8 +1,12 @@
 import type {
+  ConversationDetail,
+  ConversationListResponse,
+  ConversationSummary,
   FeedbackListResponse,
   FeedbackRequest,
   FeedbackResponse,
   HealthResponse,
+  MeResponse,
   MetaResponse,
   QueryRequest,
   QueryResponse,
@@ -170,6 +174,100 @@ export async function submitFeedback(
     throw new ApiError(await readErrorBody(response), response.status);
   }
   return (await response.json()) as FeedbackResponse;
+}
+
+/* ------------------------------------------------------------------ */
+/* Identity and saved history                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * GET /api/me
+ *
+ * Never throws. A failure is reported as "not signed in", because this only
+ * decides whether history lives on the server or in this browser, and the app
+ * must stay usable either way.
+ */
+export async function fetchMe(signal?: AbortSignal): Promise<MeResponse> {
+  const offline: MeResponse = {
+    authenticated: false,
+    userId: null,
+    displayName: null,
+    historyEnabled: false,
+    logoutUrl: null,
+  };
+  try {
+    const response = await fetch(`${API_BASE}/me`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) {
+      return offline;
+    }
+    const parsed = (await response.json()) as MeResponse;
+    return {
+      authenticated: parsed.authenticated === true,
+      userId: typeof parsed.userId === 'string' ? parsed.userId : null,
+      displayName: typeof parsed.displayName === 'string' ? parsed.displayName : null,
+      historyEnabled: parsed.historyEnabled === true,
+      logoutUrl: typeof parsed.logoutUrl === 'string' && parsed.logoutUrl.length > 0
+        ? parsed.logoutUrl
+        : null,
+    };
+  } catch {
+    return offline;
+  }
+}
+
+/** GET /api/conversations, summaries only. */
+export async function listConversations(
+  signal?: AbortSignal,
+): Promise<ConversationSummary[]> {
+  const parsed = await getJson<ConversationListResponse>('/conversations', signal);
+  return Array.isArray(parsed.conversations) ? parsed.conversations : [];
+}
+
+/** GET /api/conversations/:id, including messages. */
+export async function getConversation(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ConversationDetail> {
+  return getJson<ConversationDetail>(`/conversations/${encodeURIComponent(id)}`, signal);
+}
+
+/** PUT /api/conversations. Insert or update, owner taken from the session. */
+export async function saveConversation(
+  body: {
+    id: string;
+    title: string;
+    titleSource: 'derived' | 'generated';
+    messages: unknown[];
+  },
+  signal?: AbortSignal,
+): Promise<ConversationDetail> {
+  const response = await fetch(`${API_BASE}/conversations`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) {
+    throw new ApiError(await readErrorBody(response), response.status);
+  }
+  return (await response.json()) as ConversationDetail;
+}
+
+/** DELETE /api/conversations/:id */
+export async function deleteConversation(id: string, signal?: AbortSignal): Promise<void> {
+  const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  // A 404 means it is already gone, which is the desired end state.
+  if (!response.ok && response.status !== 404) {
+    throw new ApiError(await readErrorBody(response), response.status);
+  }
 }
 
 /**

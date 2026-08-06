@@ -32,6 +32,12 @@ function formatJson(value: unknown): string {
 export interface FeedbackDialogProps {
   /** Question, answer, and technical context attached to the submission. */
   context: FeedbackContext;
+  /**
+   * Display name of the signed in user, when the service provider told us. When
+   * set, the name field is hidden: the backend takes the name from the session
+   * and ignores anything the client sends, so asking for it would be misleading.
+   */
+  signedInAs?: string | null;
   onClose: () => void;
   onSubmitted: () => void;
 }
@@ -50,6 +56,7 @@ export interface FeedbackDialogProps {
  */
 export default function FeedbackDialog({
   context,
+  signedInAs = null,
   onClose,
   onSubmitted,
 }: FeedbackDialogProps) {
@@ -231,31 +238,37 @@ export default function FeedbackDialog({
               </p>
             </div>
 
-            {/* Temporary self reported name. When CCHMC SSO lands the backend
-                takes the user from the session, so this whole field goes away
-                along with the helpers in feedback.ts and the userName argument
-                to buildFeedbackRequest. Nothing else depends on it. */}
-            <div className="field">
-              <label className="field__label" htmlFor={nameId}>
-                Your name
-                <span className="field__flag">optional</span>
-              </label>
-              <input
-                id={nameId}
-                className="field__input"
-                type="text"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                maxLength={200}
-                autoComplete="name"
-                disabled={pending}
-                aria-describedby={nameHintId}
-              />
-              <p className="field__hint" id={nameHintId}>
-                Only so we can follow up with you. Leave it blank to stay anonymous. Your
-                name is remembered in this browser for next time.
+            {/* The name field only exists for the anonymous case. When the
+                service provider forwards an identity the backend takes the name
+                from the session and ignores anything sent here, so showing the
+                field would imply a choice the user does not have. */}
+            {signedInAs ? (
+              <p className="field__hint">
+                Submitting as <strong>{signedInAs}</strong>, taken from your CCHMC sign in.
               </p>
-            </div>
+            ) : (
+              <div className="field">
+                <label className="field__label" htmlFor={nameId}>
+                  Your name
+                  <span className="field__flag">optional</span>
+                </label>
+                <input
+                  id={nameId}
+                  className="field__input"
+                  type="text"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  maxLength={200}
+                  autoComplete="name"
+                  disabled={pending}
+                  aria-describedby={nameHintId}
+                />
+                <p className="field__hint" id={nameHintId}>
+                  Only so we can follow up with you. Leave it blank to stay anonymous. Your
+                  name is remembered in this browser for next time.
+                </p>
+              </div>
+            )}
 
             {error !== null ? (
               <p className="fb-error" id={errorId} role="alert">

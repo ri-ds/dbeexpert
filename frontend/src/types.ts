@@ -159,6 +159,45 @@ export interface QueryResponse {
 }
 
 /* ------------------------------------------------------------------ */
+/* GET /api/me and the conversation endpoints                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Who the backend thinks you are.
+ *
+ * `authenticated` false means the reverse proxy let the request through but did
+ * not forward a username, so the app cannot tell people apart and keeps history
+ * in this browser. `historyEnabled` additionally requires the database to be up.
+ */
+export interface MeResponse {
+  authenticated: boolean;
+  userId: string | null;
+  displayName: string | null;
+  historyEnabled: boolean;
+  /** Where to sign out. Null when not configured, so no dead button is shown. */
+  logoutUrl: string | null;
+}
+
+/** A conversation as the sidebar lists it, without its messages. */
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  titleSource: 'derived' | 'generated';
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
+/** One conversation with its messages, as returned when it is opened. */
+export interface ConversationDetail extends ConversationSummary {
+  messages: unknown[];
+}
+
+export interface ConversationListResponse {
+  conversations: ConversationSummary[];
+}
+
+/* ------------------------------------------------------------------ */
 /* POST /api/title                                                     */
 /* ------------------------------------------------------------------ */
 

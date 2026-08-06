@@ -29,6 +29,8 @@ export interface ChatThreadProps {
   messages: ChatMessage[];
   facultyCount: number;
   onPickExample: (question: string) => void;
+  /** Display name of the signed in user, forwarded to the feedback form. */
+  signedInAs?: string | null;
   /** Ticks while a request is in flight so pending timers stay live. */
   elapsedMs: number;
 }
@@ -43,6 +45,7 @@ export default function ChatThread({
   facultyCount,
   onPickExample,
   elapsedMs,
+  signedInAs = null,
 }: ChatThreadProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef<boolean>(true);
@@ -105,6 +108,7 @@ export default function ChatThread({
                 // question an answer replies to is the nearest user message
                 // above it. Only the thread knows that, so it is passed down.
                 question={precedingQuestion(messages, index)}
+                signedInAs={signedInAs}
               />
             ))
           )}

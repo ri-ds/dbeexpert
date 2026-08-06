@@ -30,6 +30,8 @@ export interface MessageProps {
    * carry the question, and feedback is useless without it.
    */
   question?: string | null;
+  /** Display name of the signed in user, when the SP told us. */
+  signedInAs?: string | null;
 }
 
 /**
@@ -38,7 +40,12 @@ export interface MessageProps {
  * id, and that has to unmount the assistant subtree rather than change which
  * hooks run for the same instance.
  */
-export default function Message({ message, elapsedMs, question = null }: MessageProps) {
+export default function Message({
+  message,
+  elapsedMs,
+  question = null,
+  signedInAs = null,
+}: MessageProps) {
   if (message.role === 'user') {
     return (
       <article className="msg msg--user" aria-label="Your question">
@@ -76,7 +83,12 @@ export default function Message({ message, elapsedMs, question = null }: Message
   }
 
   return (
-    <AssistantMessage message={message} elapsedMs={elapsedMs} question={question} />
+    <AssistantMessage
+      message={message}
+      elapsedMs={elapsedMs}
+      question={question}
+      signedInAs={signedInAs}
+    />
   );
 }
 
@@ -84,9 +96,15 @@ interface AssistantMessageProps {
   message: ChatMessage;
   elapsedMs: number;
   question: string | null;
+  signedInAs: string | null;
 }
 
-function AssistantMessage({ message, elapsedMs, question }: AssistantMessageProps) {
+function AssistantMessage({
+  message,
+  elapsedMs,
+  question,
+  signedInAs,
+}: AssistantMessageProps) {
   const response = message.response;
   const faculty = response?.faculty ?? [];
   const cypher = response?.cypher ?? null;
@@ -242,6 +260,7 @@ function AssistantMessage({ message, elapsedMs, question }: AssistantMessageProp
       {feedbackOpen && feedbackContext !== null ? (
         <FeedbackDialog
           context={feedbackContext}
+          signedInAs={signedInAs}
           onClose={closeFeedback}
           onSubmitted={onFeedbackSubmitted}
         />

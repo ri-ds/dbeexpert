@@ -696,9 +696,26 @@ TITLE_MAX_TOKENS = 16
 # Longest title kept, so the sidebar and the header never have to ellipsise.
 TITLE_MAX_CHARS = 48
 
+# The first version of this prompt produced titles that described the ACT of
+# asking rather than the subject: "List of faculty names requested", "Cystic
+# fibrosis faculty expertise inquiry", "Understanding their educational path".
+# Naming the failure mode explicitly and showing three examples fixes it, and
+# costs about 70 extra input tokens, which is nothing next to the value of a
+# readable sidebar.
 _TITLE_SYSTEM = (
-    "You name chat conversations. Reply with a title of at most five words, "
-    "in sentence case, with no quotes and no trailing punctuation."
+    "You name chat conversations for a tool that searches faculty expertise.\n"
+    "\n"
+    "Name the SUBJECT of the question, never the act of asking it. Do not use the "
+    "words request, inquiry, needed, asking, question, query, list, or overview.\n"
+    "\n"
+    "Reply with two to five words in sentence case. No quotes, no trailing "
+    "punctuation, no explanation.\n"
+    "\n"
+    "Examples:\n"
+    "Which faculty have expertise in cystic fibrosis? -> Cystic fibrosis expertise\n"
+    "What are the 20 faculty names? -> Faculty roster\n"
+    "Who works on machine learning for electronic health records? -> "
+    "Machine learning on health records"
 )
 
 

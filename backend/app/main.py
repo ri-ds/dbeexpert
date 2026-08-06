@@ -20,14 +20,19 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from . import db, feedback_store, llm, pipeline
+from . import chat_store, db, feedback_store, llm, pipeline
 from .faculty import faculty_names
+from .identity import User, current_user
 from .ontology import agent_names
 from .schemas import (
+    ConversationDetail,
+    ConversationListResponse,
     FeedbackListResponse,
     FeedbackRequest,
     FeedbackResponse,
     HealthResponse,
+    MeResponse,
+    SaveConversationRequest,
     MetaResponse,
     Neo4jHealth,
     OpenAIHealth,
@@ -109,8 +114,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # app carries on. Only the feedback endpoints will report an error.
     try:
         await asyncio.to_thread(feedback_store.init_schema)
+        await asyncio.to_thread(chat_store.init_schema)
     except Exception as exc:
-        log.warning("Feedback storage is unavailable, the feature will be disabled: %s", exc)
+        log.warning("Postgres is unavailable, feedback and saved history are disabled: %s", exc)
 
     yield
 
@@ -298,28 +304,159 @@ async def reset_session(request: ResetRequest) -> dict[str, bool]:
 
 
 # ----------------------------------------------------------------------
+# Identity and saved chat history
+#
+# Every route here is scoped to the authenticated user. A conversation id from
+# the client is never used alone, always together with the owner, so one user
+# cannot reach another's data by guessing an id.
+#
+# When the proxy does not forward a user, these return 401 and the client keeps
+# using its browser local history. That is the current state and is not an error.
+# ----------------------------------------------------------------------
+
+def _require_user(request: Request) -> User:
+    user = current_user(request)
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Not signed in as far as this app can tell. The reverse proxy "
+                "authenticated the request but did not forward a user, so saved "
+                "history is unavailable."
+            ),
+        )
+    return user
+
+
+@app.get(f"{settings.api_prefix}/me", response_model=MeResponse)
+async def me(request: Request) -> MeResponse:
+    """
+    Who the caller is. Always 200, never 401, because the client uses this to
+    decide which storage mode to run in rather than to gate anything.
+    """
+    logout = settings.auth_logout_url or None
+
+    user = current_user(request)
+    if user is None:
+        return MeResponse(authenticated=False, historyEnabled=False, logoutUrl=logout)
+
+    history = await asyncio.to_thread(chat_store.is_available)
+    if history:
+        try:
+            await asyncio.to_thread(chat_store.touch_user, user.id, user.display_name)
+        except Exception as exc:
+            log.warning("Could not record user %s: %s", user.id, exc)
+            history = False
+
+    return MeResponse(
+        authenticated=True,
+        userId=user.id,
+        displayName=user.display_name,
+        historyEnabled=history,
+        logoutUrl=logout,
+    )
+
+
+@app.get(f"{settings.api_prefix}/conversations", response_model=ConversationListResponse)
+async def list_conversations(request: Request) -> ConversationListResponse:
+    user = _require_user(request)
+    try:
+        items = await asyncio.to_thread(chat_store.list_conversations, user.id)
+    except Exception as exc:
+        log.exception("Could not list conversations")
+        raise HTTPException(status_code=503, detail="Saved history is unavailable.") from exc
+    return ConversationListResponse(conversations=items)
+
+
+@app.get(
+    f"{settings.api_prefix}/conversations/{{conversation_id}}",
+    response_model=ConversationDetail,
+)
+async def get_conversation(conversation_id: str, request: Request) -> ConversationDetail:
+    user = _require_user(request)
+    try:
+        found = await asyncio.to_thread(chat_store.get_conversation, user.id, conversation_id)
+    except Exception as exc:
+        log.exception("Could not load conversation")
+        raise HTTPException(status_code=503, detail="Saved history is unavailable.") from exc
+    if found is None:
+        # Same response whether it does not exist or belongs to someone else, so
+        # ids cannot be probed.
+        raise HTTPException(status_code=404, detail="No such conversation.")
+    return ConversationDetail(**found)
+
+
+@app.put(f"{settings.api_prefix}/conversations", response_model=ConversationDetail)
+async def save_conversation(
+    body: SaveConversationRequest, request: Request
+) -> ConversationDetail:
+    user = _require_user(request)
+    if not body.messages:
+        # An untouched New Chat is never stored, matching the client's own rule.
+        raise HTTPException(status_code=400, detail="Refusing to save an empty conversation.")
+    try:
+        await asyncio.to_thread(
+            chat_store.save_conversation,
+            user.id,
+            body.id,
+            body.title,
+            body.titleSource,
+            body.messages,
+        )
+        saved = await asyncio.to_thread(chat_store.get_conversation, user.id, body.id)
+    except Exception as exc:
+        log.exception("Could not save conversation")
+        raise HTTPException(status_code=503, detail="Saved history is unavailable.") from exc
+    if saved is None:
+        raise HTTPException(status_code=503, detail="Conversation did not persist.")
+    return ConversationDetail(**saved)
+
+
+@app.delete(f"{settings.api_prefix}/conversations/{{conversation_id}}")
+async def delete_conversation(conversation_id: str, request: Request) -> dict[str, bool]:
+    user = _require_user(request)
+    try:
+        removed = await asyncio.to_thread(
+            chat_store.delete_conversation, user.id, conversation_id
+        )
+    except Exception as exc:
+        log.exception("Could not delete conversation")
+        raise HTTPException(status_code=503, detail="Saved history is unavailable.") from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="No such conversation.")
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------
 # Feedback
 # ----------------------------------------------------------------------
 
 @app.post(f"{settings.api_prefix}/feedback", response_model=FeedbackResponse)
-async def submit_feedback(request: FeedbackRequest) -> FeedbackResponse:
+async def submit_feedback(
+    body: FeedbackRequest, request: Request
+) -> FeedbackResponse:
     """
     Record feedback about one answer.
 
-    When CCHMC SSO lands, `userName` should come from the authenticated session
-    rather than the request body, and the client should stop sending it.
+    The signed in identity wins over anything the client sent. A self reported
+    name is only used when the proxy did not tell us who the user is, which keeps
+    today's behaviour working while making the name unspoofable as soon as the
+    identity header exists.
     """
+    user = current_user(request)
+    user_name = user.display_name if user is not None else body.userName
+
     try:
         new_id = await asyncio.to_thread(
             feedback_store.submit_feedback,
-            user_name=request.userName,
-            question=request.question,
-            answer=request.answer,
-            mode=request.mode,
-            intent=request.intent,
-            skill=request.skill,
-            comment=request.comment,
-            trace_snapshot=request.traceSnapshot,
+            user_name=user_name,
+            question=body.question,
+            answer=body.answer,
+            mode=body.mode,
+            intent=body.intent,
+            skill=body.skill,
+            comment=body.comment,
+            trace_snapshot=body.traceSnapshot,
         )
     except Exception as exc:
         log.exception("Could not store feedback")
@@ -331,7 +468,7 @@ async def submit_feedback(request: FeedbackRequest) -> FeedbackResponse:
             ),
         ) from exc
 
-    log.info("Stored feedback %s from %r", new_id, request.userName or "anonymous")
+    log.info("Stored feedback %s from %r", new_id, user_name or "anonymous")
     return FeedbackResponse(ok=True, id=new_id)
 
 
@@ -342,6 +479,8 @@ async def submit_feedback(request: FeedbackRequest) -> FeedbackResponse:
 # Header names that a reverse proxy or SAML service provider might use to pass
 # the signed in user through to an application.
 _IDENTITY_HEADERS = (
+    # The CCHMC service provider's scheme, confirmed live.
+    "sso-uid", "sso-email", "sso-fname", "sso-lname",
     "x-forwarded-user", "x-forwarded-email", "x-forwarded-preferred-username",
     "x-remote-user", "remote-user", "x-authenticated-user", "x-user", "x-username",
     "x-auth-request-user", "x-auth-request-email", "x-auth-request-preferred-username",

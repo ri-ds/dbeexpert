@@ -339,3 +339,24 @@ export function DotIcon(props: IconProps) {
     </Svg>
   );
 }
+
+/** A single person, used on the signed in user chip. */
+export function UserIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="8" r="3.6" />
+      <path d="M4.8 20c0-3.6 3.2-5.6 7.2-5.6s7.2 2 7.2 5.6" />
+    </Svg>
+  );
+}
+
+/** Sign out: a door with an arrow leaving it. */
+export function LogoutIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M14.5 4.5H18a1.5 1.5 0 0 1 1.5 1.5v12a1.5 1.5 0 0 1-1.5 1.5h-3.5" />
+      <line x1="4.5" y1="12" x2="13" y2="12" />
+      <polyline points="9.5,8.5 13,12 9.5,15.5" />
+    </Svg>
+  );
+}

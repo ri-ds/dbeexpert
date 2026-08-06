@@ -2829,3 +2829,80 @@ kbd {
     opacity: 0.85;
   }
 }
+
+
+/* ------------------------------------------------------------------
+   Signed in user, top right
+   ------------------------------------------------------------------ */
+
+.userchip {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.userchip__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.userchip__icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.userchip__name {
+  min-width: 0;
+  max-width: 22ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.userchip__out {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-decoration: none;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+
+.userchip__out:hover {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger-ink);
+}
+
+/* On narrow screens the name is the useful part, so the Sign out caption
+   collapses to its icon rather than pushing the name out of the bar. */
+@media (max-width: 899px) {
+  .userchip__out-label {
+    display: none;
+  }
+
+  .userchip__name {
+    max-width: 12ch;
+  }
+}

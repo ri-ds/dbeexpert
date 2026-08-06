@@ -171,7 +171,12 @@ services:
       NEO4J_FULLTEXT_INDEX: ${NEO4J_FULLTEXT_INDEX:-chunk_text_fulltext}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY must be set in .env}
       OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-5-mini}
-      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      # MUST match the model that wrote the vectors in the dump. Do not change to
+      # text-embedding-3-small: it is also 1536 dimensions so the startup width
+      # check still passes, but it is a different embedding space and answers
+      # silently degrade. Measured, top similarity drops from 0.92 to 0.52.
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-ada-002}
+      OPENAI_TITLE_MODEL: ${OPENAI_TITLE_MODEL:-gpt-4o}
       OPENAI_EMBEDDING_DIMENSIONS: ${OPENAI_EMBEDDING_DIMENSIONS:-1536}
       PIPELINE_MAX_CONCURRENCY: ${PIPELINE_MAX_CONCURRENCY:-10}
       RETRIEVAL_TOP_K: ${RETRIEVAL_TOP_K:-100}
@@ -182,6 +187,11 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dbe}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-dbefeedback}
       # Temporary gate on the admin feedback view, replaced by SSO group checks later.
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set in .env}
+      # Header the SSO proxy uses for the signed in user, and where Sign out
+      # goes. The logout URL is empty by default and the button stays hidden
+      # until it is set, since a dead logout link is worse than none.
+      AUTH_USER_HEADER: ${AUTH_USER_HEADER:-X-Forwarded-User}
+      AUTH_LOGOUT_URL: ${AUTH_LOGOUT_URL:-}
       # In production the API is same origin, since nginx serves /expert/api/ from
       # the same host as the app, so CORS is not exercised at all. Set correctly
       # anyway for any non browser or cross origin caller.

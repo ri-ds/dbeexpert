@@ -13,6 +13,7 @@ import { AlertIcon, InfoIcon, MenuIcon } from './components/Icons';
 import InfoDialog from './components/InfoDialog';
 import Sidebar from './components/Sidebar';
 import StatusPill, { type HealthState } from './components/StatusPill';
+import UserChip from './components/UserChip';
 import { useConversations } from './hooks/useConversations';
 import { useTheme } from './hooks/useTheme';
 import { createId } from './ids';
@@ -55,6 +56,8 @@ export default function App() {
     conversations,
     activeId,
     messages,
+    userName,
+    logoutUrl,
     updateMessages,
     setGeneratedTitle,
     newConversation,
@@ -701,7 +704,22 @@ export default function App() {
             >
               <InfoIcon size={17} />
             </button>
-            <StatusPill state={healthState} health={health} />
+            {/* The signed in user takes this slot. The connection pill mostly
+                said "Connected", which is reassurance rather than information,
+                and a real outage already raises the banner below. When health is
+                not ok the pill is still shown next to the name, so a problem is
+                never hidden by the swap. Anonymous falls back to the pill alone,
+                which is the behaviour before identity existed. */}
+            {userName ? (
+              <>
+                {healthState !== 'ok' ? (
+                  <StatusPill state={healthState} health={health} />
+                ) : null}
+                <UserChip name={userName} logoutUrl={logoutUrl} />
+              </>
+            ) : (
+              <StatusPill state={healthState} health={health} />
+            )}
           </div>
         </header>
 
@@ -715,6 +733,7 @@ export default function App() {
         ) : null}
 
         <ChatThread
+          signedInAs={userName}
           messages={messages}
           facultyCount={faculty.length}
           onPickExample={pickExample}

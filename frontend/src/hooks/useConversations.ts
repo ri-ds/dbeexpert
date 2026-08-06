@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  deleteConversation as apiDeleteConversation,
+  fetchMe,
+  getConversation,
+  listConversations,
+  saveConversation,
+} from '../api';
 import { createId } from '../ids';
 import type {
   ChatMessage,
+  ConversationSummary,
   CypherKind,
   CypherResult,
   CypherRow,
@@ -16,9 +24,24 @@ import type {
 } from '../types';
 
 /**
- * Chat history, owned entirely by the browser. There is no server side store
- * for conversations, so the list lives in localStorage and is validated on the
- * way back in. Nothing about the stored shape is trusted.
+ * Chat history, in one of two modes decided at startup by /api/me.
+ *
+ *   server  The CCHMC service provider told us who the user is, so history lives
+ *           in Postgres keyed by that account. A different person on the same PC
+ *           signs in and sees their own conversations, and history follows them
+ *           to any machine.
+ *   local   The proxy authenticated the request but forwarded no identity, so
+ *           history stays in this browser's localStorage. This is the original
+ *           behaviour and the fallback whenever identity or the database is
+ *           unavailable, so the app is never broken by their absence.
+ *
+ * Browser stored data is validated on the way back in and nothing about its
+ * shape is trusted, since it can be edited by hand or left over from an older
+ * version of the app.
+ *
+ * Local conversations are deliberately never migrated into a signed in account.
+ * On a shared PC they may belong to whoever used it before, and inheriting them
+ * is exactly the leak this feature exists to prevent.
  *
  * A conversation id doubles as the backend session id, so reopening a
  * conversation also restores its follow up context on the server for as long as
@@ -403,6 +426,27 @@ export function deriveTitle(messages: ChatMessage[]): string {
   return `${text.slice(0, MAX_TITLE).trimEnd()}…`;
 }
 
+/**
+ * A server summary as a local Conversation.
+ *
+ * `messages` starts empty because the list endpoint deliberately omits them; a
+ * user with a hundred conversations would otherwise transfer megabytes to render
+ * a sidebar. They are fetched when the conversation is opened.
+ */
+function fromSummary(summary: ConversationSummary): Conversation {
+  const created = Date.parse(summary.createdAt);
+  const updated = Date.parse(summary.updatedAt);
+  return {
+    id: summary.id,
+    title: summary.title || FALLBACK_TITLE,
+    titleSource: summary.titleSource === 'generated' ? 'generated' : 'derived',
+    createdAt: Number.isFinite(created) ? created : Date.now(),
+    updatedAt: Number.isFinite(updated) ? updated : Date.now(),
+    messages: [],
+  };
+}
+
+
 function createConversation(): Conversation {
   const now = Date.now();
   return {
@@ -444,6 +488,18 @@ export interface UseConversationsResult {
   /** Messages of the active conversation. */
   messages: ChatMessage[];
   /**
+   * Where history lives. `server` means it is tied to the signed in CCHMC
+   * account, so a different person on the same PC sees their own. `local` means
+   * the proxy did not tell us who the user is, and it stays in this browser.
+   */
+  storage: 'local' | 'server';
+  /** Display name of the signed in user, when known. */
+  userName: string | null;
+  /** Where to sign out, when the deployment configured it. */
+  logoutUrl: string | null;
+  /** True while an opened conversation's messages are still being fetched. */
+  loadingConversation: boolean;
+  /**
    * Update one conversation's messages. The id is explicit so a response that
    * arrives after the user switched conversations still lands in the right one.
    */
@@ -462,12 +518,148 @@ export interface UseConversationsResult {
   deleteConversation: (id: string) => void;
 }
 
+/** How long to wait after the last change before writing to the server. */
+const SAVE_DEBOUNCE_MS = 900;
+
 export function useConversations(): UseConversationsResult {
   const [state, setState] = useState<State>(initialState);
 
+  // Which storage is in use. Starts local so the app renders immediately, then
+  // flips to server if /api/me says the proxy told us who the user is.
+  const [storage, setStorage] = useState<'local' | 'server'>('local');
+  const [userName, setUserName] = useState<string | null>(null);
+  const [logoutUrl, setLogoutUrl] = useState<string | null>(null);
+  const [loadingConversation, setLoadingConversation] = useState(false);
+
+  // Ids whose messages have actually been fetched. In server mode the list
+  // arrives as summaries, so an unopened conversation has an empty message array
+  // that must not be mistaken for a conversation the user emptied.
+  const loadedRef = useRef<Set<string>>(new Set());
+  const saveTimersRef = useRef<Map<string, number>>(new Map());
+  const storageRef = useRef<'local' | 'server'>('local');
+
   useEffect(() => {
-    writeConversations(state.conversations);
-  }, [state.conversations]);
+    storageRef.current = storage;
+  }, [storage]);
+
+  /* ---------------------------------------------------------------- */
+  /* Decide which storage to use, then load from it                    */
+  /* ---------------------------------------------------------------- */
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+
+    void (async () => {
+      const me = await fetchMe(controller.signal);
+      if (cancelled) {
+        return;
+      }
+      setUserName(me.displayName);
+      setLogoutUrl(me.logoutUrl);
+
+      if (!me.historyEnabled) {
+        // Anonymous, or the database is down. Keep the browser local history the
+        // app has always used. Nothing changes for the user.
+        setStorage('local');
+        return;
+      }
+
+      setStorage('server');
+      try {
+        const summaries = await listConversations(controller.signal);
+        if (cancelled) {
+          return;
+        }
+        // Deliberately NOT merging anything from localStorage. On a shared PC
+        // those chats may belong to whoever used it before, and inheriting them
+        // into a named account is exactly the leak this feature exists to fix.
+        const list = summaries.map(fromSummary);
+        setState(
+          list.length > 0
+            ? { conversations: list, activeId: list[0]?.id ?? '' }
+            : (() => {
+                const fresh = createConversation();
+                return { conversations: [fresh], activeId: fresh.id };
+              })(),
+        );
+      } catch {
+        // Signed in but the list failed. Fall back rather than show nothing.
+        if (!cancelled) {
+          setStorage('local');
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, []);
+
+  /* ---------------------------------------------------------------- */
+  /* Persist                                                           */
+  /* ---------------------------------------------------------------- */
+
+  useEffect(() => {
+    // Browser storage is only written in local mode. In server mode writing here
+    // too would leave a copy of one person's chats on a shared machine.
+    if (storage === 'local') {
+      writeConversations(state.conversations);
+    }
+  }, [state.conversations, storage]);
+
+  // Clear any pending saves on unmount so a timer cannot fire after teardown.
+  useEffect(
+    () => () => {
+      for (const timer of saveTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      saveTimersRef.current.clear();
+    },
+    [],
+  );
+
+  /**
+   * Queue a debounced save of one conversation to the server.
+   *
+   * Debounced because messages change many times per answer as stages stream in,
+   * and each change would otherwise be a request. Keyed per conversation so a
+   * save for one cannot cancel a save for another.
+   */
+  const queueSave = useCallback((conversation: Conversation) => {
+    if (storageRef.current !== 'server' || conversation.messages.length === 0) {
+      return;
+    }
+    const timers = saveTimersRef.current;
+    const existing = timers.get(conversation.id);
+    if (existing !== undefined) {
+      window.clearTimeout(existing);
+    }
+    timers.set(
+      conversation.id,
+      window.setTimeout(() => {
+        timers.delete(conversation.id);
+        // Strip live streaming state, exactly as the browser path does, so a
+        // reopened conversation can never show a spinner for a finished request.
+        const messages = conversation.messages
+          .filter((message) => !message.pending)
+          .map((message) => ({ ...message, stages: [], ranked: [], pending: false }));
+        if (messages.length === 0) {
+          return;
+        }
+        void saveConversation({
+          id: conversation.id,
+          title: conversation.title,
+          titleSource: conversation.titleSource,
+          messages,
+        }).catch(() => {
+          // A failed save is not worth interrupting the user for. The next change
+          // queues another attempt.
+        });
+      }, SAVE_DEBOUNCE_MS),
+    );
+  }, []);
 
   const updateMessages = useCallback(
     (conversationId: string, updater: (current: ChatMessage[]) => ChatMessage[]) => {
@@ -484,7 +676,7 @@ export function useConversations(): UseConversationsResult {
           return current;
         }
         const list = current.conversations.slice();
-        list[index] = {
+        const updated: Conversation = {
           ...target,
           messages,
           // Only the local fallback tracks the messages. A generated name is
@@ -492,10 +684,12 @@ export function useConversations(): UseConversationsResult {
           title: target.titleSource === 'generated' ? target.title : deriveTitle(messages),
           updatedAt: Date.now(),
         };
+        list[index] = updated;
+        queueSave(updated);
         return { conversations: sortConversations(list), activeId: current.activeId };
       });
     },
-    [],
+    [queueSave],
   );
 
   const setGeneratedTitle = useCallback((conversationId: string, title: string) => {
@@ -513,12 +707,14 @@ export function useConversations(): UseConversationsResult {
         return current;
       }
       const list = current.conversations.slice();
-      list[index] = { ...target, title: cleaned, titleSource: 'generated' };
+      const renamed: Conversation = { ...target, title: cleaned, titleSource: 'generated' };
+      list[index] = renamed;
+      queueSave(renamed);
       // Renaming is not activity, so updatedAt is left alone and the ordering
       // of the history does not jump around.
       return { conversations: list, activeId: current.activeId };
     });
-  }, []);
+  }, [queueSave]);
 
   const newConversation = useCallback(() => {
     setState((current) => {
@@ -544,9 +740,59 @@ export function useConversations(): UseConversationsResult {
         ? { ...current, activeId: id }
         : current;
     });
+
+    // In server mode the list arrives as summaries, so opening a conversation for
+    // the first time has to fetch its messages. Fetched once, then cached.
+    if (storageRef.current !== 'server' || loadedRef.current.has(id)) {
+      return;
+    }
+    loadedRef.current.add(id);
+    setLoadingConversation(true);
+    void getConversation(id)
+      .then((detail) => {
+        const messages = Array.isArray(detail.messages)
+          ? detail.messages.reduce<ChatMessage[]>((accumulated, entry) => {
+              const message = normalizeMessage(entry);
+              if (message !== null) {
+                accumulated.push(message);
+              }
+              return accumulated;
+            }, [])
+          : [];
+        setState((current) => {
+          const index = current.conversations.findIndex(
+            (conversation) => conversation.id === id,
+          );
+          const target = index === -1 ? undefined : current.conversations[index];
+          if (target === undefined) {
+            return current;
+          }
+          const list = current.conversations.slice();
+          list[index] = { ...target, messages };
+          return { ...current, conversations: list };
+        });
+      })
+      .catch(() => {
+        // Allow a retry on the next open rather than caching a failure.
+        loadedRef.current.delete(id);
+      })
+      .finally(() => setLoadingConversation(false));
   }, []);
 
   const deleteConversation = useCallback((id: string) => {
+    // Cancel a queued save so it cannot resurrect what is being deleted.
+    const pending = saveTimersRef.current.get(id);
+    if (pending !== undefined) {
+      window.clearTimeout(pending);
+      saveTimersRef.current.delete(id);
+    }
+    if (storageRef.current === 'server') {
+      // Removed from the UI immediately. A failed delete is not surfaced, since
+      // the row reappears on the next load and the user can retry.
+      void apiDeleteConversation(id).catch(() => undefined);
+    }
+    loadedRef.current.delete(id);
+
     setState((current) => {
       const remaining = current.conversations.filter(
         (conversation) => conversation.id !== id,
@@ -578,6 +824,10 @@ export function useConversations(): UseConversationsResult {
     conversations: state.conversations,
     activeId: state.activeId,
     messages: active?.messages ?? EMPTY_MESSAGES,
+    storage,
+    userName,
+    logoutUrl,
+    loadingConversation,
     updateMessages,
     setGeneratedTitle,
     newConversation,
