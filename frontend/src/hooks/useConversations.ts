@@ -79,6 +79,14 @@ export interface Conversation {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  /**
+   * How many messages the server said this conversation holds, set when it
+   * arrives in the list. The list returns summaries, so `messages` is empty
+   * until the conversation is opened, and without this there is no way to tell
+   * a conversation that has not been fetched from one the user never used.
+   * Undefined for conversations created in this browser.
+   */
+  messageCount?: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -443,6 +451,10 @@ function fromSummary(summary: ConversationSummary): Conversation {
     createdAt: Number.isFinite(created) ? created : Date.now(),
     updatedAt: Number.isFinite(updated) ? updated : Date.now(),
     messages: [],
+    // Kept so the history list can show this conversation before its messages
+    // have been fetched. Without it an unopened conversation is indistinguishable
+    // from an untouched New Chat and gets filtered out of the sidebar.
+    messageCount: Number.isFinite(summary.messageCount) ? summary.messageCount : 0,
   };
 }
 
@@ -542,6 +554,54 @@ export function useConversations(): UseConversationsResult {
     storageRef.current = storage;
   }, [storage]);
 
+  /**
+   * Fetch one conversation's messages in server mode.
+   *
+   * The list endpoint returns summaries only, so every conversation arrives with
+   * an empty message array and the content has to be pulled per id. Two callers
+   * need it: the sidebar, and the initial load, which must not leave the
+   * conversation it opens looking empty.
+   *
+   * Idempotent. loadedRef stops a second fetch for the same id, and a failure
+   * clears the mark so the next attempt retries instead of caching the failure.
+   */
+  const loadMessages = useCallback((id: string) => {
+    if (storageRef.current !== 'server' || loadedRef.current.has(id)) {
+      return;
+    }
+    loadedRef.current.add(id);
+    setLoadingConversation(true);
+    void getConversation(id)
+      .then((detail) => {
+        const messages = Array.isArray(detail.messages)
+          ? detail.messages.reduce<ChatMessage[]>((accumulated, entry) => {
+              const message = normalizeMessage(entry);
+              if (message !== null) {
+                accumulated.push(message);
+              }
+              return accumulated;
+            }, [])
+          : [];
+        setState((current) => {
+          const index = current.conversations.findIndex(
+            (conversation) => conversation.id === id,
+          );
+          const target = index === -1 ? undefined : current.conversations[index];
+          if (target === undefined) {
+            return current;
+          }
+          const list = current.conversations.slice();
+          list[index] = { ...target, messages };
+          return { ...current, conversations: list };
+        });
+      })
+      .catch(() => {
+        // Allow a retry on the next open rather than caching a failure.
+        loadedRef.current.delete(id);
+      })
+      .finally(() => setLoadingConversation(false));
+  }, []);
+
   /* ---------------------------------------------------------------- */
   /* Decide which storage to use, then load from it                    */
   /* ---------------------------------------------------------------- */
@@ -566,6 +626,10 @@ export function useConversations(): UseConversationsResult {
       }
 
       setStorage('server');
+      // Assigned here as well as through its own effect. That effect does not run
+      // until this one has finished, and loadMessages below reads the ref, so
+      // leaving it to the effect alone would make the load a silent no-op.
+      storageRef.current = 'server';
       try {
         const summaries = await listConversations(controller.signal);
         if (cancelled) {
@@ -575,18 +639,23 @@ export function useConversations(): UseConversationsResult {
         // those chats may belong to whoever used it before, and inheriting them
         // into a named account is exactly the leak this feature exists to fix.
         const list = summaries.map(fromSummary);
-        setState(
-          list.length > 0
-            ? { conversations: list, activeId: list[0]?.id ?? '' }
-            : (() => {
-                const fresh = createConversation();
-                return { conversations: [fresh], activeId: fresh.id };
-              })(),
-        );
+        const opening = list[0];
+        if (opening === undefined) {
+          const fresh = createConversation();
+          setState({ conversations: [fresh], activeId: fresh.id });
+          return;
+        }
+        setState({ conversations: list, activeId: opening.id });
+        // The list carries summaries only, so the conversation that opens here
+        // has no messages yet. Without this fetch it renders blank, which reads
+        // as the whole history having been deleted, and clicking it in the
+        // sidebar cannot fix it because it is already the active conversation.
+        loadMessages(opening.id);
       } catch {
         // Signed in but the list failed. Fall back rather than show nothing.
         if (!cancelled) {
           setStorage('local');
+          storageRef.current = 'local';
         }
       }
     })();
@@ -595,7 +664,8 @@ export function useConversations(): UseConversationsResult {
       cancelled = true;
       controller.abort();
     };
-  }, []);
+    // loadMessages is stable, so this still runs once on mount.
+  }, [loadMessages]);
 
   /* ---------------------------------------------------------------- */
   /* Persist                                                           */
@@ -741,43 +811,8 @@ export function useConversations(): UseConversationsResult {
         : current;
     });
 
-    // In server mode the list arrives as summaries, so opening a conversation for
-    // the first time has to fetch its messages. Fetched once, then cached.
-    if (storageRef.current !== 'server' || loadedRef.current.has(id)) {
-      return;
-    }
-    loadedRef.current.add(id);
-    setLoadingConversation(true);
-    void getConversation(id)
-      .then((detail) => {
-        const messages = Array.isArray(detail.messages)
-          ? detail.messages.reduce<ChatMessage[]>((accumulated, entry) => {
-              const message = normalizeMessage(entry);
-              if (message !== null) {
-                accumulated.push(message);
-              }
-              return accumulated;
-            }, [])
-          : [];
-        setState((current) => {
-          const index = current.conversations.findIndex(
-            (conversation) => conversation.id === id,
-          );
-          const target = index === -1 ? undefined : current.conversations[index];
-          if (target === undefined) {
-            return current;
-          }
-          const list = current.conversations.slice();
-          list[index] = { ...target, messages };
-          return { ...current, conversations: list };
-        });
-      })
-      .catch(() => {
-        // Allow a retry on the next open rather than caching a failure.
-        loadedRef.current.delete(id);
-      })
-      .finally(() => setLoadingConversation(false));
-  }, []);
+    loadMessages(id);
+  }, [loadMessages]);
 
   const deleteConversation = useCallback((id: string) => {
     // Cancel a queued save so it cannot resurrect what is being deleted.

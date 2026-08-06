@@ -52,8 +52,15 @@ export default function Sidebar({
 }: SidebarProps) {
   // An untouched conversation is not history yet, so it stays out of the list
   // until it has something in it.
+  //
+  // messageCount is what makes this safe in server mode. There the list arrives
+  // as summaries, so every conversation starts with an empty messages array and
+  // only the one being viewed gets fetched. Testing messages.length alone hid
+  // every unopened conversation, which looked exactly like the account's whole
+  // history had been deleted on every refresh.
   const history = conversations.filter(
-    (conversation) => conversation.messages.length > 0,
+    (conversation) =>
+      conversation.messages.length > 0 || (conversation.messageCount ?? 0) > 0,
   );
 
   return (

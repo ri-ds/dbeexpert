@@ -501,12 +501,19 @@ export default function App() {
     (id: string) => {
       if (id === activeId) {
         setDrawerOpen(false);
+        // Reopening the conversation that is already open is normally a no-op.
+        // The exception is one showing nothing, where a fetch failed: clicking it
+        // is the only retry a user has, so let that case through.
+        const active = conversations.find((conversation) => conversation.id === id);
+        if (active !== undefined && active.messages.length === 0) {
+          selectConversation(id);
+        }
         return;
       }
       leaveCurrent();
       selectConversation(id);
     },
-    [activeId, leaveCurrent, selectConversation],
+    [activeId, conversations, leaveCurrent, selectConversation],
   );
 
   const removeConversation = useCallback(
@@ -597,7 +604,14 @@ export default function App() {
   // content to name yet, so it falls back to the app name.
   const headerTitle = useMemo(() => {
     const active = conversations.find((conversation) => conversation.id === activeId);
-    if (active === undefined || active.messages.length === 0) {
+    if (active === undefined) {
+      return 'Expertise Explorer';
+    }
+    // messageCount covers the moment on load where a saved conversation is open
+    // but its messages are still being fetched. Without it the header falls back
+    // to the app name and then snaps to the real title.
+    const hasContent = active.messages.length > 0 || (active.messageCount ?? 0) > 0;
+    if (!hasContent) {
       return 'Expertise Explorer';
     }
     return active.title.trim().length > 0 ? active.title : 'Expertise Explorer';
