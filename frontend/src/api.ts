@@ -235,7 +235,15 @@ export async function getConversation(
   return getJson<ConversationDetail>(`/conversations/${encodeURIComponent(id)}`, signal);
 }
 
-/** PUT /api/conversations. Insert or update, owner taken from the session. */
+/**
+ * POST /api/conversations. Insert or update, owner taken from the session.
+ *
+ * POST rather than PUT, even though this is an idempotent upsert and PUT is the
+ * correct verb. The CCHMC SAML layer in front of the app rejects PUT outright:
+ * the request never reaches the backend and returns 403 with the service
+ * provider's own "User not authorized" page. GET and POST are permitted, which
+ * is why reading history worked while every save was silently discarded.
+ */
 export async function saveConversation(
   body: {
     id: string;
@@ -246,7 +254,7 @@ export async function saveConversation(
   signal?: AbortSignal,
 ): Promise<ConversationDetail> {
   const response = await fetch(`${API_BASE}/conversations`, {
-    method: 'PUT',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(body),
     ...(signal ? { signal } : {}),
@@ -257,10 +265,16 @@ export async function saveConversation(
   return (await response.json()) as ConversationDetail;
 }
 
-/** DELETE /api/conversations/:id */
+/**
+ * POST /api/conversations/:id/delete
+ *
+ * The POST spelling, for the same reason saveConversation uses POST: the SAML
+ * layer in front of the app blocks DELETE as well as PUT, so a delete sent with
+ * the correct verb never arrives and the conversation reappears on reload.
+ */
 export async function deleteConversation(id: string, signal?: AbortSignal): Promise<void> {
-  const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
+  const response = await fetch(`${API_BASE}/conversations/${encodeURIComponent(id)}/delete`, {
+    method: 'POST',
     headers: { Accept: 'application/json' },
     ...(signal ? { signal } : {}),
   });

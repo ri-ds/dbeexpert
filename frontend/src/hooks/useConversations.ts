@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   deleteConversation as apiDeleteConversation,
+  ApiError,
   fetchMe,
   getConversation,
   listConversations,
@@ -401,6 +402,32 @@ function toStored(conversations: Conversation[]): Conversation[] {
     .filter((conversation) => conversation.messages.length > 0);
 }
 
+/**
+ * A short reason a save failed, fit to show a user.
+ *
+ * Error bodies from a failing save are not always JSON. A reverse proxy that
+ * rejects the request answers with its own HTML page, and putting that in a
+ * banner is unreadable, so anything that looks like markup is reduced to the
+ * status code alone.
+ */
+function describeSaveFailure(error: unknown): string {
+  if (error instanceof ApiError) {
+    const body = error.message.trim();
+    const looksLikeMarkup = body.startsWith('<') || /<\/?(html|head|body|center)\b/i.test(body);
+    if (body.length === 0 || looksLikeMarkup) {
+      return `HTTP ${error.status}`;
+    }
+    const oneLine = body.replace(/\s+/g, ' ');
+    const clipped = oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine;
+    return `HTTP ${error.status}: ${clipped}`;
+  }
+  const message = String((error as { message?: string } | null)?.message ?? error).trim();
+  if (message.length === 0) {
+    return 'unknown error';
+  }
+  return message.length > 120 ? `${message.slice(0, 117)}...` : message;
+}
+
 function writeConversations(conversations: Conversation[]): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(toStored(conversations)));
@@ -512,6 +539,13 @@ export interface UseConversationsResult {
   /** True while an opened conversation's messages are still being fetched. */
   loadingConversation: boolean;
   /**
+   * Why saving to account history failed, or null while it works. When this is
+   * set the hook has already fallen back to browser storage, so nothing is lost,
+   * but the user is no longer building history tied to their account and needs
+   * telling.
+   */
+  saveError: string | null;
+  /**
    * Update one conversation's messages. The id is explicit so a response that
    * arrives after the user switched conversations still lands in the right one.
    */
@@ -549,6 +583,17 @@ export function useConversations(): UseConversationsResult {
   const loadedRef = useRef<Set<string>>(new Set());
   const saveTimersRef = useRef<Map<string, number>>(new Map());
   const storageRef = useRef<'local' | 'server'>('local');
+
+  // Why a server save failed, or null while saving works. Surfaced to the user,
+  // because silently not recording their history is the worst of the options.
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Latest state, readable from callbacks that close over stale values. Needed so
+  // a failed save can write the current conversations to browser storage.
+  const stateRef = useRef<State>(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     storageRef.current = storage;
@@ -611,7 +656,19 @@ export function useConversations(): UseConversationsResult {
     const controller = new AbortController();
 
     void (async () => {
-      const me = await fetchMe(controller.signal);
+      let me: Awaited<ReturnType<typeof fetchMe>>;
+      try {
+        me = await fetchMe(controller.signal);
+      } catch (error: unknown) {
+        // Previously uncaught, which made this an unhandled rejection and left
+        // the hook half initialised. Browser storage is the safe fallback.
+        if (!cancelled) {
+          console.error('Could not determine the signed in user:', error);
+          setStorage('local');
+          storageRef.current = 'local';
+        }
+        return;
+      }
       if (cancelled) {
         return;
       }
@@ -723,9 +780,23 @@ export function useConversations(): UseConversationsResult {
           title: conversation.title,
           titleSource: conversation.titleSource,
           messages,
-        }).catch(() => {
-          // A failed save is not worth interrupting the user for. The next change
-          // queues another attempt.
+        }).catch((error: unknown) => {
+          // A failed save used to be swallowed here. That was wrong: server mode
+          // deliberately does not write browser storage, so a rejected save meant
+          // the conversation existed nowhere and vanished on the next reload,
+          // with nothing shown to the user.
+          //
+          // Now the failure demotes this session to browser storage. The chat is
+          // written locally straight away so it cannot be lost, and the banner
+          // tells the user their account history is not recording. One transient
+          // failure is enough to demote, on purpose: keeping the data is worth
+          // more than staying on the server path.
+          const detail = describeSaveFailure(error);
+          console.error('Saving to account history failed, falling back to this browser:', error);
+          setSaveError(detail);
+          setStorage('local');
+          storageRef.current = 'local';
+          writeConversations(stateRef.current.conversations);
         });
       }, SAVE_DEBOUNCE_MS),
     );
@@ -863,6 +934,7 @@ export function useConversations(): UseConversationsResult {
     userName,
     logoutUrl,
     loadingConversation,
+    saveError,
     updateMessages,
     setGeneratedTitle,
     newConversation,

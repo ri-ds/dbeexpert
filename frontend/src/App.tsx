@@ -58,6 +58,7 @@ export default function App() {
     messages,
     userName,
     logoutUrl,
+    saveError,
     updateMessages,
     setGeneratedTitle,
     newConversation,
@@ -618,6 +619,12 @@ export default function App() {
   }, [activeId, conversations]);
 
   const warning = useMemo(() => {
+    // Highest priority, because it is the only warning about the user's own data.
+    // Their chats are being kept in this browser instead, so they are not lost,
+    // but they will not follow them to another machine.
+    if (saveError !== null) {
+      return `Your chat history could not be saved to your account (${saveError}). This conversation is being kept in this browser only, so it will not appear when you sign in elsewhere.`;
+    }
     if (healthState === 'offline') {
       return 'The backend is not responding. Start the API on port 8011, then this banner will clear on its own.';
     }
@@ -639,7 +646,7 @@ export default function App() {
       return null;
     }
     return `Answers will fail because ${problems.join(' and ')}.`;
-  }, [health, healthState]);
+  }, [health, healthState, saveError]);
 
   const blocked = healthState === 'offline';
 

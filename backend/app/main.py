@@ -386,7 +386,20 @@ async def get_conversation(conversation_id: str, request: Request) -> Conversati
     return ConversationDetail(**found)
 
 
-@app.put(f"{settings.api_prefix}/conversations", response_model=ConversationDetail)
+# POST as well as PUT, and the client uses POST.
+#
+# PUT is the correct verb for an idempotent upsert and was the original choice,
+# but the CCHMC SAML layer in front of this app refuses it: a PUT never reaches
+# the application at all, it comes back as 403 with the service provider's own
+# "User not authorized" page. GET and POST are allowed, which is why reading
+# history and asking questions worked while every save was discarded at the
+# proxy. PUT is kept registered so local development and any existing caller
+# still work.
+@app.api_route(
+    f"{settings.api_prefix}/conversations",
+    methods=["POST", "PUT"],
+    response_model=ConversationDetail,
+)
 async def save_conversation(
     body: SaveConversationRequest, request: Request
 ) -> ConversationDetail:
@@ -412,8 +425,7 @@ async def save_conversation(
     return ConversationDetail(**saved)
 
 
-@app.delete(f"{settings.api_prefix}/conversations/{{conversation_id}}")
-async def delete_conversation(conversation_id: str, request: Request) -> dict[str, bool]:
+async def _delete_conversation(conversation_id: str, request: Request) -> dict[str, bool]:
     user = _require_user(request)
     try:
         removed = await asyncio.to_thread(
@@ -425,6 +437,21 @@ async def delete_conversation(conversation_id: str, request: Request) -> dict[st
     if not removed:
         raise HTTPException(status_code=404, detail="No such conversation.")
     return {"ok": True}
+
+
+@app.delete(f"{settings.api_prefix}/conversations/{{conversation_id}}")
+async def delete_conversation(conversation_id: str, request: Request) -> dict[str, bool]:
+    return await _delete_conversation(conversation_id, request)
+
+
+# The POST spelling of the same thing, and the one the client uses. DELETE is
+# blocked by the SAML layer in front of this app for the same reason PUT is, so
+# a delete issued with the correct verb never arrives. See save_conversation.
+@app.post(f"{settings.api_prefix}/conversations/{{conversation_id}}/delete")
+async def delete_conversation_via_post(
+    conversation_id: str, request: Request
+) -> dict[str, bool]:
+    return await _delete_conversation(conversation_id, request)
 
 
 # ----------------------------------------------------------------------
