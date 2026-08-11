@@ -42,17 +42,29 @@ _TOPICAL = re.compile(
     re.IGNORECASE,
 )
 
-# A qualifier or activity verb immediately after "faculty" means the user wants a
-# filtered subset, not the whole roster. Returning all 20 names to "list the
-# faculty who study asthma" is a confident wrong answer, which is the worst kind.
+# A qualifier or activity verb following "faculty" means the user wants a filtered
+# subset, not the whole roster. Returning all 20 names to "list the faculty who
+# study asthma" is a confident wrong answer, which is the worst kind.
 #
 # Position matters: "who" is only a filter when it follows the noun. "Who are the
 # faculty" is a roster question, "faculty who study asthma" is not.
+#
+# An affiliation phrase is allowed to sit in between, because people write the
+# division and the site into the question:
+#
+#   "faculty who are doing neuroimaging"              caught before
+#   "faculty at CCHMC who are doing neuroimaging"      NOT caught, returned all 20
+#
+# Requiring strict adjacency made "at CCHMC" enough to defeat the guard. The
+# filler is deliberately narrow, a preposition plus at most three words, so the
+# positional rule still holds and "who are the faculty" stays a roster question.
+_FILTER_FILLER = r"(?:\s+(?:at|in|of|from|within|across)(?:\s+[\w'&.-]+){1,3})?"
 _FILTERED = re.compile(
-    r"\bfacult\w*\s+("
+    r"\bfacult\w*" + _FILTER_FILLER + r"\s+("
     r"who|whom|that|which|with|having|holding|receiving|awarded"
     r"|research\w*|stud(y|ies|ying)|investigat\w*|analy[sz]\w*"
     r"|publish\w*|work\w*|focus\w*|specialis\w*|specializ\w*|explor\w*"
+    r"|do(es|ing)?|using|apply\w*|appl(y|ies|ying)"
     r")\b",
     re.IGNORECASE,
 )
@@ -67,6 +79,9 @@ class Skill:
     caption: str
     # High precision patterns that route without consulting the model at all.
     patterns: tuple[re.Pattern[str], ...] = ()
+    # Phrases that rule this skill out even when a pattern above matches. Used
+    # where a near miss would produce a confident wrong answer.
+    blockers: tuple[re.Pattern[str], ...] = ()
     # Deterministic prose. Receives the rows and returns the answer text.
     summarise: Callable[[list[dict[str, Any]]], str] | None = None
     params: dict[str, Any] = field(default_factory=dict)
@@ -87,6 +102,11 @@ class Skill:
         # Deterministic routing must be high precision. Anything that hints at a
         # subject filter falls through to the model, which can weigh it properly.
         if _TOPICAL.search(question) or _FILTERED.search(question):
+            return False
+        # Per skill exclusions. These cannot live in the shared guards above: the
+        # phrase that disqualifies one skill is often exactly what identifies
+        # another, and a shared guard would block both.
+        if any(pattern.search(question) for pattern in self.blockers):
             return False
         return any(pattern.search(question) for pattern in self.patterns)
 
@@ -132,6 +152,17 @@ def _summarise_per_faculty(rows: list[dict[str, Any]]) -> str:
     return (
         f"Document coverage for all {len(rows)} faculty members, {total:,} passages in "
         f"total, ordered by volume."
+    )
+
+
+def _summarise_publications(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "No publication records were found in the graph."
+    total = sum(int(r.get("publications") or 0) for r in rows)
+    return (
+        f"Publication counts for all {len(rows)} faculty members, {total:,} distinct "
+        f"titles in total, ordered by count. Titles are taken from the publications "
+        f"section of each CV, so treat these as close rather than exact."
     )
 
 
@@ -190,6 +221,32 @@ RETURN faculty, passages, documents
 ORDER BY passages DESC
 """
 
+# Publications per person, which is a different question from how much CV text a
+# person has. Asking for a publication count used to be answered with passage and
+# document counts, which look like an answer and are not one.
+#
+# Two decisions worth recording, both measured against this graph:
+#
+#  1. Counting Publication nodes overcounts badly. The same paper is extracted
+#     from several passages and lands as several nodes: one faculty member has 226
+#     Publication nodes but only 145 distinct titles. So the count is over
+#     lowercased, trimmed titles, not over nodes.
+#  2. Only the Publications section of the CV counts. Restricting to source2
+#     ending in "_Publications" excludes papers mentioned in passing inside a
+#     grant or abstract section, and still covers all 20 faculty.
+#
+# These are titles extracted from CV text, so treat the totals as close rather
+# than exact. The caption says so, because a precise looking number that is not
+# precise is worse than an honest approximation.
+_PUBLICATIONS_PER_FACULTY_CYPHER = """
+MATCH (p:Publication)-[:FROM_CHUNK]->(c:Chunk)
+WHERE c.source2 ENDS WITH '_Publications' AND p.name IS NOT NULL
+WITH split(c.source2, '_')[0] AS faculty, toLower(trim(p.name)) AS title
+WHERE title <> ''
+RETURN faculty, count(DISTINCT title) AS publications
+ORDER BY publications DESC, faculty
+"""
+
 _GRANTS_BY_AGENCY_CYPHER = """
 MATCH (g:Grant)-[:fundedBy|funded_by]->(a:FundingAgency)
 WHERE a.name IS NOT NULL
@@ -213,13 +270,29 @@ SKILLS: dict[str, Skill] = {
     "faculty_roster": Skill(
         id="faculty_roster",
         description=(
-            "The list of faculty members in the division. Use for any request to "
-            "list, name, enumerate, or count the faculty themselves, with no "
-            "subject matter criterion attached."
+            "The list of faculty members in the division, names only. Use for any "
+            "request to list, name, enumerate, or count the faculty themselves, "
+            "with no subject matter criterion attached and no other detail asked "
+            "for about each person."
         ),
         cypher=_ROSTER_CYPHER,
         caption="Faculty roster",
         summarise=_summarise_roster,
+        # This skill returns names and nothing else, so a request for names plus
+        # some attribute of each person is not a roster question, even though it
+        # opens like one. "List every faculty member and their number of
+        # publications" was answered with the bare roster because this skill is
+        # checked first and its list pattern matched the opening words.
+        #
+        # Note that a bare "how many faculty are there" must stay a roster
+        # question, so counting words alone cannot be a blocker here.
+        blockers=_p(
+            r"\band\s+(their|his|her|its)\b",
+            r"\bwith\s+(their|his|her)\b",
+            r"\balong\s+with\b",
+            r"\band\s+how\s+many\b",
+            r"\b(their|the)\s+(number|count|total|amount)\s+of\b",
+        ),
         patterns=_p(
             r"\b(list|name|show|give|enumerate)\b[^?]{0,40}\bfacult",
             r"\bwhat\s+(are|is)\b[^?]{0,40}\bfacult\w*\s*(names|members|list|roster)?",
@@ -249,15 +322,40 @@ SKILLS: dict[str, Skill] = {
         id="documents_per_faculty",
         description=(
             "How much source material each faculty member has in the graph, as a "
-            "count of passages and documents per person."
+            "count of passages and documents per person. This is a measure of CV "
+            "text volume, NOT a count of publications. For publications use "
+            "publications_per_faculty instead."
         ),
         cypher=_PER_FACULTY_CYPHER,
         caption="Documents per faculty member",
         summarise=_summarise_per_faculty,
+        # Deliberately narrow, and deliberately not matching "publications".
+        # These patterns used to swallow "how many publications does each faculty
+        # member have" and answer it with passage counts.
         patterns=_p(
             r"\bhow\s+(many|much)\s+(document|passage|chunk|record|data)\w*\s+"
             r"(does|do|per|for)\b[^?]{0,30}\bfacult",
             r"\b(document|passage|chunk)\w*\s+per\s+facult",
+        ),
+    ),
+    "publications_per_faculty": Skill(
+        id="publications_per_faculty",
+        description=(
+            "How many publications each faculty member has, as a count of distinct "
+            "publication titles listed in their CV. Use for any request for "
+            "publication counts, numbers of papers, or who publishes most."
+        ),
+        cypher=_PUBLICATIONS_PER_FACULTY_CYPHER,
+        caption="Publications per faculty member",
+        summarise=_summarise_publications,
+        patterns=_p(
+            r"\b(number|count)\s+of\s+publications?\b",
+            r"\bhow\s+many\s+(publications?|papers?|articles?)\b",
+            r"\bpublications?\s+(count|per|each|total)\b",
+            r"\b(publications?|papers?)\s+(does|do)\s+(each|every|the)\b",
+            r"\btheir\s+number\s+of\s+publications?\b",
+            r"\bwho\s+(has|have)\s+the\s+most\s+(publications?|papers?)\b",
+            r"\bmost\s+(published|prolific)\b",
         ),
     ),
     "grants_by_agency": Skill(

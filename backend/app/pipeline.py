@@ -64,7 +64,25 @@ _BACK_REFERENCE = re.compile(
 )
 
 
+# A pronoun whose antecedent is inside the same sentence is not a back reference.
+#
+# "List every faculty member and their number of publications" contains "their",
+# but it points at "every faculty member" in the same breath, not at a previous
+# answer. Treating it as a follow up sent this question, which is one of the
+# app's own starter examples, past deterministic routing and left the classifier
+# to guess, and it guessed document counts.
+#
+# Narrow on purpose. A genuine follow up such as "what are their degrees" names no
+# group, so it is untouched.
+_SELF_CONTAINED_ANTECEDENT = re.compile(
+    r"\b(every|each|all|any)\s+(of\s+the\s+)?(facult\w*|person|people|member|one)\b",
+    re.IGNORECASE,
+)
+
+
 def _has_back_reference(question: str) -> bool:
+    if _SELF_CONTAINED_ANTECEDENT.search(question):
+        return False
     return bool(_BACK_REFERENCE.search(question))
 
 
@@ -168,9 +186,16 @@ Then classify the intent, which decides how the answer is found:
   in some subject, or asks to describe someone's work. This needs judgement over
   CV prose. Examples: "which faculty work on cystic fibrosis", "who has
   experience with Bayesian trials", "what is Cole Brokamp working on".
+- "chitchat": not a question about the faculty or the graph at all. Greetings,
+  thanks, goodbyes, and questions about this tool itself. Examples: "hi", "hello",
+  "thanks", "who are you", "what can you do", "what is this", "help".
+  Choose this whenever no answer could come from faculty CVs, because the
+  alternative is inventing a database query for a question that has no data
+  behind it.
 
 If the intent is "roster" or "factual" and one of the graph skills above answers
-it exactly, name that skill. Otherwise set skill to null.
+it exactly, name that skill. Otherwise set skill to null. For "chitchat" always
+set skill to null.
 
 If the question refers to a positional subset of previously discussed faculty,
 for example "the first two", "last three", report it in "subset".
@@ -178,7 +203,7 @@ for example "the first two", "last three", report it in "subset".
 Return JSON with exactly this shape:
 {{
   "type": "named" | "followup" | "first",
-  "intent": "roster" | "factual" | "expertise",
+  "intent": "roster" | "factual" | "expertise" | "chitchat",
   "skill": "<skill id from the list above>" | null,
   "faculty": ["<name copied exactly from Allowed Faculty>"],
   "subset": {{"position": "first" | "last" | "all", "count": <integer or null>}}
@@ -212,7 +237,7 @@ def _clean_classification(data: Any) -> dict[str, Any]:
         qtype = "first"
 
     intent = data.get("intent")
-    if intent not in {"roster", "factual", "expertise"}:
+    if intent not in {"roster", "factual", "expertise", "chitchat"}:
         intent = "expertise"
 
     # Only accept a skill id that actually exists in the registry.
@@ -807,6 +832,115 @@ async def run_query(
     )
 
 
+# Offered to a user who asked what this tool does. Kept in step with the starter
+# questions the empty chat screen shows, in frontend/src/components/EmptyState.tsx,
+# so a new user is told the same things in both places.
+_EXAMPLE_QUESTIONS = "\n".join(
+    (
+        "Who has expertise in longitudinal modeling of cystic fibrosis outcomes?",
+        "Which faculty work on spatial methods and environmental exposure?",
+        "Find faculty with experience in Bayesian adaptive clinical trial design.",
+        "Which faculty publish on machine learning applied to electronic health records?",
+        "List every faculty member and their number of publications.",
+    )
+)
+
+
+_CHITCHAT_SYSTEM = (
+    "You are the Expertise Explorer, a search tool over the CVs of the faculty in "
+    "the Division of Biostatistics and Epidemiology at Cincinnati Children's.\n\n"
+    "Reply to the user in two or three short sentences: say what you can do, then "
+    "give two example questions drawn from the Example questions supplied below.\n\n"
+    "Use only the figures given in Graph facts. Never state a number that is not "
+    "there, and never name a faculty member who is not listed. You have no "
+    "information beyond these CVs, so if the user asked for something outside that "
+    "scope, say so plainly. Do not mention Neo4j, Cypher, embeddings, or any other "
+    "implementation detail. No greeting boilerplate beyond a brief hello where the "
+    "user greeted you."
+)
+
+
+async def _run_chitchat(
+    question: str,
+    mode: str,
+    session_id: str,
+    watch: Stopwatch,
+    emit: Emit,
+) -> dict[str, Any]:
+    """
+    Answer a greeting, or a question about this tool, without touching retrieval.
+
+    The reply is generated rather than a canned string, but every fact in it comes
+    from the graph, read here at request time. Nothing about the corpus is written
+    into the prompt as a literal, so the answer cannot drift out of date if the
+    dump is replaced with a larger one.
+    """
+    await emit("stage", {"stage": "answer", "label": "Composing the answer"})
+
+    facts = "The knowledge graph could not be reached, so quote no figures at all."
+    try:
+        summary = await asyncio.to_thread(run_skill, get_skill("graph_summary"))
+        rows = summary[1]
+        row = rows[0] if rows else {}
+        names = faculty_names()
+        facts = (
+            f"faculty covered: {row.get('faculty')}\n"
+            f"CV passages searchable: {row.get('chunks')}\n"
+            f"entities in the graph: {row.get('nodes')}\n"
+            f"connections between them: {row.get('relationships')}\n"
+            f"the faculty are: {', '.join(names)}"
+        )
+    except Exception:
+        # A greeting is not worth failing over, so answer without the numbers.
+        log.exception("Could not read graph facts for a chitchat reply")
+
+    prompt = (
+        f"User said:\n{question}\n\n"
+        f"Graph facts:\n{facts}\n\n"
+        f"Example questions:\n{_EXAMPLE_QUESTIONS}"
+    )
+    # Deliberately the small non reasoning model, not the pipeline's chat model.
+    #
+    # The chat model is a reasoning model, and a reasoning model bills hidden
+    # thinking against max_completion_tokens. Measured here: the whole 220 token
+    # budget went on reasoning and the reply came back empty, so a greeting
+    # produced a blank answer. A three sentence reply needs no reasoning, so it
+    # uses the same cheap model that names conversations, where a cap is safe.
+    answer = await llm.chat(
+        _CHITCHAT_SYSTEM,
+        prompt,
+        model=settings.title_model,
+        max_completion_tokens=220,
+    )
+    watch.mark("answer", "Composed the answer", "no graph search needed")
+
+    return {
+        "mode": mode,
+        "questionType": "first",
+        "intent": "chitchat",
+        "agent": None,
+        "answerText": answer.strip(),
+        "faculty": [],
+        # No cypher block at all. Showing a query panel for "hi" is what made the
+        # old behaviour look like a real database answer.
+        "cypher": None,
+        "trace": {
+            "stages": watch.stages,
+            "retrievedChunks": 0,
+            "judged": 0,
+            "kept": 0,
+            "cutoff": None,
+            "intent": "chitchat",
+            "skill": None,
+            "coverage": None,
+            "judgements": [],
+            "noEvidence": [],
+        },
+        "timings": {"totalMs": watch.total_ms},
+        "sessionId": session_id,
+    }
+
+
 async def _run_skill(
     skill: Skill,
     question: str,
@@ -995,6 +1129,19 @@ async def _run_graphrag_mode(
     # something in this conversation, and a standalone Cypher query cannot see
     # that. Routing it to the graph loses the context and returns nothing.
     is_followup = classification["type"] == "followup"
+
+    # Not a question about the faculty at all, so answer it here.
+    #
+    # This branch exists because there was previously no way to say "no data can
+    # answer this". A greeting was forced into one of the data intents and fell
+    # through to generated Cypher, so "hi" returned a table of Person relationship
+    # counts and "who are you" returned the ten most mentioned faculty.
+    # Confidently answering a question nobody asked is the worst failure mode
+    # here, worse than any wrong ranking.
+    if intent == "chitchat" and not is_followup:
+        if agent_task is not None:
+            agent_task.cancel()
+        return await _run_chitchat(question, mode, session_id, watch, emit)
 
     # The classifier judged this answerable from the graph. Take that route and
     # skip agent selection, retrieval, judging, and extraction entirely.
