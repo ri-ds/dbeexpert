@@ -70,6 +70,7 @@ async def chat(
     json_mode: bool = False,
     model: str | None = None,
     max_completion_tokens: int | None = None,
+    use_seed: bool = False,
 ) -> str:
     """
     Single turn completion. Returns the raw assistant text.
@@ -90,6 +91,10 @@ async def chat(
         kwargs["response_format"] = {"type": "json_object"}
     if max_completion_tokens is not None:
         kwargs["max_completion_tokens"] = max_completion_tokens
+    # Seed goes on the classify, judge and extract calls only, matching the
+    # baseline. Agent selection and conversation naming are left unseeded.
+    if use_seed and settings.llm_seed is not None:
+        kwargs["seed"] = settings.llm_seed
 
     async with get_semaphore():
         response = await client.chat.completions.create(**kwargs)
@@ -131,7 +136,7 @@ async def chat_strict_json(system: str, user: str, *, model: str | None = None) 
     which turns a dropped faculty member into a kept one. Neither is wrong, but
     both diverge, so the pipeline uses this instead.
     """
-    raw = await chat(system, user, json_mode=False, model=model)
+    raw = await chat(system, user, json_mode=False, model=model, use_seed=True)
     return parse_strict(raw)
 
 

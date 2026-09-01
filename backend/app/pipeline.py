@@ -394,27 +394,68 @@ STRICT_CUTOFF = 60
 LENIENT_CUTOFF = 40
 GAP_THRESHOLD = 18
 
+# Added in Ankita's updated llm_utils.py.
+#
+# LATE_GAP: once enough faculty are already kept, a smaller drop is enough to
+# cut. The first 8 need an 18 point gap, everything after needs only 10.
+LATE_GAP_THRESHOLD = 10
+LATE_GAP_AFTER = 8
+# TOP_BAND: keep only faculty within this many points of the highest scorer.
+# The floor itself is excluded, so a top score of 95 keeps scores above 80.
+TOP_BAND = 15
+
+
+def _truncate_top_band(ranked: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
+    """
+    Drop anyone more than TOP_BAND points below the best scorer.
+
+    The floor is exclusive: a top score of 95 keeps scores above 80, so exactly
+    80 is dropped.
+    """
+    if not ranked:
+        return ranked, None
+    top = ranked[0]["score"]          # sorted descending, so [0] is the max
+    floor = top - TOP_BAND
+    kept = [f for f in ranked if f["score"] > floor]
+    if len(kept) == len(ranked):
+        return ranked, None
+    return kept, (f"top score {int(top)}, keeping above {int(floor)}, "
+                  f"dropping {len(ranked) - len(kept)} lower scoring")
+
+
+def _truncate_at_gap(ranked: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
+    """
+    Cut the list at the first meaningful drop between consecutive scores.
+
+    The threshold tightens once several faculty are already kept: the first
+    LATE_GAP_AFTER need a GAP_THRESHOLD drop, after that LATE_GAP_THRESHOLD is
+    enough.
+    """
+    for i in range(1, len(ranked)):
+        drop = ranked[i - 1]["score"] - ranked[i]["score"]
+        threshold = LATE_GAP_THRESHOLD if i >= LATE_GAP_AFTER else GAP_THRESHOLD
+        if drop >= threshold:
+            return ranked[:i], (
+                f"{int(drop)} point gap after {ranked[i - 1]['faculty_name']} "
+                f"(threshold {threshold}), dropping {len(ranked) - i} lower scoring")
+    return ranked, None
+
 
 def apply_cutoff(ranked: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
     """
-    Trim the ranked list at a natural break, then apply a strict or lenient
-    floor depending on how many strong candidates there are.
+    Trim the ranked list, in the same three stages as the baseline app:
+    the top band, then a gap cut, then a strict or lenient floor.
     """
     if not ranked:
         return [], "no candidates"
 
     notes: list[str] = []
-
-    cut = ranked
-    for i in range(1, len(ranked)):
-        drop = ranked[i - 1]["score"] - ranked[i]["score"]
-        if drop >= GAP_THRESHOLD:
-            notes.append(
-                f"{int(drop)} point score gap after {ranked[i - 1]['faculty_name']}, "
-                f"dropping {len(ranked) - i} lower scoring"
-            )
-            cut = ranked[:i]
-            break
+    cut, note = _truncate_top_band(ranked)
+    if note:
+        notes.append(note)
+    cut, note = _truncate_at_gap(cut)
+    if note:
+        notes.append(note)
 
     high = [f for f in cut if f["score"] >= HIGH_SCORE]
     if len(high) >= MANY_HIGH_SCORERS:
@@ -984,101 +1025,114 @@ async def _run_graphrag_mode(
     # ---- Discovery ----
     await emit("stage", {"stage": "retrieve", "label": "Searching the graph"})
 
-    # Two retrievals, unioned, because they do different jobs.
-    #
-    # The selected retriever goes DEEP: it returns many passages for whoever
-    # ranks highest, which is what gives a strong candidate enough evidence to
-    # score well.
-    #
-    # The coverage query goes WIDE: it guarantees every faculty member with any
-    # material gets judged. Ranked retrieval alone reached only 9 of 20 faculty
-    # on "expertise in cystic fibrosis" — the other 11 were never scored, and the
-    # answer gave no hint they had been skipped.
-    #
-    # Coverage alone is worse: capping each person at a handful of passages
-    # starves the genuinely strong candidates of evidence and their scores
-    # collapse. Depth plus breadth is what works.
-    if settings.coverage_retrieval:
-        primary, coverage = await asyncio.gather(
-            retrieve(retriever, question),
-            retrieve_per_faculty(question),
-            return_exceptions=True,
-        )
-        primary_chunks = primary if isinstance(primary, list) else []
-        coverage_chunks = coverage if isinstance(coverage, list) else []
-        if not isinstance(primary, list):
-            log.warning("Ranked retrieval failed: %s", primary)
-        if not isinstance(coverage, list):
-            log.warning("Coverage retrieval failed: %s", coverage)
-        chunks = dedupe(primary_chunks + coverage_chunks)
-    else:
-        # One ranked search, exactly as the baseline does it. Faculty whose CV
-        # text does not rank inside top_k are never scored on this question.
-        primary_chunks = await retrieve(retriever, question)
-        coverage_chunks = []
-        chunks = primary_chunks
-
-    covered = len({faculty_from_source(c["source"]) for c in chunks if c.get("source")})
-    if coverage_chunks:
-        detail = (f"{len(chunks)} chunks, all {covered} faculty evaluated "
-                  f"({len(primary_chunks)} ranked + {len(coverage_chunks)} coverage)")
-    else:
-        detail = f"{len(chunks)} chunks, {covered} faculty reached"
-    watch.mark("retrieve", "Retrieved graph context", detail)
-
-    if not chunks:
-        return _empty_response(mode, qtype, agent_name, session_id, watch)
-
-    blocks = group_by_faculty(chunks)
-
-    # Every block is judged unless a ceiling is configured, which it is not by
-    # default. The baseline judges all of them.
-    if settings.max_judged_faculty > 0:
-        blocks.sort(key=lambda b: int(b.get("chunks", 0)), reverse=True)
-        capped = blocks[: settings.max_judged_faculty]
-    else:
-        capped = blocks
-    dropped = len(blocks) - len(capped)
-
-    await emit(
-        "stage",
-        {
-            "stage": "judge",
-            "label": "Assessing faculty relevance",
-            "detail": f"{len(capped)} candidates",
-            "progress": {"done": 0, "total": len(capped)},
-        },
-    )
-
     completed = 0
     lock = asyncio.Lock()
 
-    async def judge_one(block: dict[str, Any]) -> dict[str, Any] | None:
+    async def _judge_all(capped_blocks):
+        """Score every candidate block, reporting progress as each finishes."""
         nonlocal completed
-        try:
-            verdict = await judge_faculty(block, question)
-        except Exception as exc:
-            log.warning("Judging failed for %s: %s", block.get("faculty"), exc)
-            verdict = None
-        async with lock:
-            completed += 1
-            await emit(
-                "stage",
-                {
-                    "stage": "judge",
-                    "label": "Assessing faculty relevance",
-                    "detail": f"{len(capped)} candidates",
-                    "progress": {"done": completed, "total": len(capped)},
-                },
-            )
-        return verdict
+        completed = 0
+        await emit(
+            "stage",
+            {
+                "stage": "judge",
+                "label": "Assessing faculty relevance",
+                "detail": f"{len(capped_blocks)} candidates",
+                "progress": {"done": 0, "total": len(capped_blocks)},
+            },
+        )
 
-    verdicts = await asyncio.gather(*(judge_one(b) for b in capped))
-    ranked = sorted([v for v in verdicts if v], key=lambda v: v["score"], reverse=True)
-    detail = f"{len(ranked)} of {len(capped)} relevant"
-    if dropped:
-        detail += f", {dropped} not judged"
-    watch.mark("judge", "Assessed faculty relevance", detail)
+        async def judge_one(block):
+            nonlocal completed
+            try:
+                verdict = await judge_faculty(block, question)
+            except Exception as exc:
+                log.warning("Judging failed for %s: %s", block.get("faculty"), exc)
+                verdict = None
+            async with lock:
+                completed += 1
+                await emit(
+                    "stage",
+                    {
+                        "stage": "judge",
+                        "label": "Assessing faculty relevance",
+                        "detail": f"{len(capped_blocks)} candidates",
+                        "progress": {"done": completed, "total": len(capped_blocks)},
+                    },
+                )
+            return verdict
+
+        return await asyncio.gather(*(judge_one(b) for b in capped_blocks))
+
+    async def _discover(top_k: int):
+        """One full discovery pass at a given retrieval breadth."""
+        if settings.coverage_retrieval:
+            primary, coverage = await asyncio.gather(
+                retrieve(retriever, question, top_k=top_k),
+                retrieve_per_faculty(question),
+                return_exceptions=True,
+            )
+            primary_chunks = primary if isinstance(primary, list) else []
+            coverage_chunks = coverage if isinstance(coverage, list) else []
+            if not isinstance(primary, list):
+                log.warning("Ranked retrieval failed: %s", primary)
+            if not isinstance(coverage, list):
+                log.warning("Coverage retrieval failed: %s", coverage)
+            found = dedupe(primary_chunks + coverage_chunks)
+        else:
+            # One ranked search, as the baseline does it. Faculty whose CV text
+            # does not rank inside top_k are never scored on this question.
+            primary_chunks = await retrieve(retriever, question, top_k=top_k)
+            coverage_chunks = []
+            found = primary_chunks
+
+        if not found:
+            return found, [], [], [], "no context found"
+
+        blocks_found = group_by_faculty(found)
+        if settings.max_judged_faculty > 0:
+            blocks_found.sort(key=lambda b: int(b.get("chunks", 0)), reverse=True)
+            capped_found = blocks_found[: settings.max_judged_faculty]
+        else:
+            capped_found = blocks_found
+
+        verdicts = await _judge_all(capped_found)
+        ranked_found = sorted([v for v in verdicts if v], key=lambda v: v["score"], reverse=True)
+        kept_found, note = apply_cutoff(ranked_found)
+
+        covered = len({faculty_from_source(c["source"]) for c in found if c.get("source")})
+        reach = (f"{len(found)} chunks, all {covered} faculty evaluated"
+                 if coverage_chunks else
+                 f"{len(found)} chunks, {covered} faculty reached")
+        log.info("retrieval top_k=%s -> %s, %s ranked, %s kept",
+                 top_k, reach, len(ranked_found), len(kept_found))
+        return found, capped_found, ranked_found, kept_found, f"top_k {top_k}, {reach}"
+
+    used_top_k = settings.retrieval_top_k
+    chunks, capped, ranked, kept, reach_note = await _discover(used_top_k)
+
+    # Nothing survived the cutoff, so widen the net once and try again. Straight
+    # from the baseline: a narrow first pass can miss everyone on an unusual
+    # phrasing, and a second wider pass is cheaper than returning nothing.
+    if not kept and settings.expanded_top_k > used_top_k:
+        log.info("No faculty kept at top_k=%s, retrying at top_k=%s",
+                 used_top_k, settings.expanded_top_k)
+        await emit(
+            "stage",
+            {
+                "stage": "retrieve",
+                "label": "Widening the search",
+                "detail": f"nothing matched at top {used_top_k}, retrying at {settings.expanded_top_k}",
+            },
+        )
+        used_top_k = settings.expanded_top_k
+        chunks, capped, ranked, kept, reach_note = await _discover(used_top_k)
+
+    watch.mark("retrieve", "Retrieved graph context", reach_note)
+    watch.mark("judge", "Assessed faculty relevance", f"{len(ranked)} of {len(capped)} relevant")
+
+    if not chunks:
+        return _empty_response(mode, qtype, agent_name, session_id, watch)
 
     await emit(
         "trace",

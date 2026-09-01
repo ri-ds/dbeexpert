@@ -254,41 +254,74 @@ def test_cutoff_constants() -> None:
         pipeline.LENIENT_CUTOFF,
         pipeline.GAP_THRESHOLD,
     ) == (3, 70, 60, 40, 18)
+    assert (pipeline.LATE_GAP_THRESHOLD, pipeline.LATE_GAP_AFTER, pipeline.TOP_BAND) == (10, 8, 15)
 
 
 def _ranked(*scores: float) -> list[dict]:
     return [{"faculty_name": f"P{i}", "score": s} for i, s in enumerate(scores)]
 
 
-def test_gap_truncation_fires_at_the_first_big_drop() -> None:
+def test_top_band_drops_anyone_far_below_the_leader() -> None:
+    """
+    TOP_BAND runs first: with a top score of 95 the floor is 80, exclusive, so
+    80 and below go regardless of the other rules.
+    """
+    kept, note = pipeline.apply_cutoff(_ranked(95, 92, 88, 80, 55))
+    assert [k["score"] for k in kept] == [95, 92, 88]
+    assert "top score 95" in note and "above 80" in note
+
+
+def test_eighteen_point_gap_rule_still_works_on_its_own() -> None:
+    """The 18 point rule, tested directly on the gap stage."""
+    cut, note = pipeline._truncate_at_gap(_ranked(95, 92, 88, 60, 55))
+    assert [c["score"] for c in cut] == [95, 92, 88]
+    assert "18" not in note or "point gap" in note
+
+
+def test_top_band_makes_the_eighteen_point_gap_unreachable() -> None:
+    """
+    Worth recording, because it is a side effect of TOP_BAND rather than an
+    intended rule. TOP_BAND is 15, so after the band cut every survivor is
+    within 15 points of the leader and the largest possible drop between them is
+    14. GAP_THRESHOLD is 18, so it can never fire once the band has run.
+
+    Only LATE_GAP_THRESHOLD (10) is reachable through apply_cutoff.
+    """
+    assert pipeline.TOP_BAND < pipeline.GAP_THRESHOLD
     kept, note = pipeline.apply_cutoff(_ranked(95, 92, 88, 60, 55))
-    assert [k["faculty_name"] for k in kept] == ["P0", "P1", "P2"]
-    assert "gap" in note.lower() or "point score gap" in note.lower()
+    assert [k["score"] for k in kept] == [95, 92, 88]
+    assert "point gap" not in note, "the band already removed the low scorers"
+
+
+def test_late_gap_threshold_tightens_after_eight_kept() -> None:
+    """From the ninth candidate on, a 10 point drop is enough to cut."""
+    kept, note = pipeline.apply_cutoff(_ranked(*([95] * 9 + [85])))
+    assert len(kept) == 9
+    assert "threshold 10" in note
 
 
 def test_strict_cutoff_when_three_or_more_score_seventy_plus() -> None:
-    kept, _ = pipeline.apply_cutoff(_ranked(95, 88, 75, 61, 60))
-    # Three high scorers, so the floor is "strictly greater than 60".
-    assert [k["score"] for k in kept] == [95, 88, 75, 61]
+    kept, _ = pipeline.apply_cutoff(_ranked(75, 73, 71, 66, 61))
+    # All within 15 of 75, no 18 point gap, three at 70 or above, so the floor
+    # is "strictly above 60".
+    assert [k["score"] for k in kept] == [75, 73, 71, 66, 61]
 
 
 def test_lenient_cutoff_when_fewer_than_three_high_scorers() -> None:
-    # No adjacent drop reaches 18, so the gap rule does not fire and the floor
-    # decides. One high scorer, so the floor is "40 or above".
-    kept, _ = pipeline.apply_cutoff(_ranked(75, 62, 50, 39))
-    assert [k["score"] for k in kept] == [75, 62, 50]
+    kept, _ = pipeline.apply_cutoff(_ranked(68, 62, 56, 54))
+    # Top band floor is 53, no 18 point gap, only one scorer at 70 or above, so
+    # the floor is "40 and above".
+    assert [k["score"] for k in kept] == [68, 62, 56, 54]
 
 
-def test_gap_rule_is_applied_before_the_floor() -> None:
+def test_cutoff_order_is_band_then_gap_then_floor() -> None:
     """
-    Order matters: truncating at the gap first can leave too few high scorers to
-    trigger the strict floor, which changes the result. 75, 55, 45, 39 has a 20
-    point drop after the first entry, so everything below it goes regardless of
-    clearing 40.
+    Order matters. 75, 55, 45, 39: the top band floor is 60, so everything below
+    it goes before the gap or floor rules are even consulted.
     """
     kept, note = pipeline.apply_cutoff(_ranked(75, 55, 45, 39))
     assert [k["score"] for k in kept] == [75]
-    assert "20 point score gap" in note
+    assert note.index("top score") < note.index("strong candidates")
 
 
 def test_empty_ranking() -> None:
@@ -393,11 +426,11 @@ def test_strict_parse_discards_what_the_baseline_discards() -> None:
     assert parse_json('Here you go: {"a": 1}') == {"a": 1}
 
 
-def test_no_sampling_parameters_are_sent() -> None:
+def test_temperature_is_never_sent_but_seed_is() -> None:
     """
-    The baseline sends only model and messages. temperature and seed are both
-    rejected outright by gpt-5-mini, and sending either would make this app's
-    answers diverge from the baseline's.
+    gpt-5-mini rejects temperature outright, so it must never be sent. A seed is
+    accepted and is the only reproducibility lever the API offers here, so the
+    baseline sets one and this app matches it.
     """
     import inspect
 
@@ -405,10 +438,22 @@ def test_no_sampling_parameters_are_sent() -> None:
 
     source = inspect.getsource(llm.chat)
     assert "temperature" not in source, "chat() is sending temperature"
-    assert "seed" not in source, "chat() is sending seed"
+    assert "seed" in source, "chat() is not sending a seed"
+    assert settings.llm_seed == 42, f"seed is {settings.llm_seed!r}, baseline uses 42"
     assert settings.chat_model == "gpt-5-mini", (
         f"chat model is {settings.chat_model!r}; the baseline hardcodes gpt-5-mini"
     )
+
+
+def test_seed_only_on_the_pipeline_calls() -> None:
+    """Agent selection and conversation naming are left unseeded, as in the baseline."""
+    import inspect
+
+    from app import llm
+
+    assert "use_seed=True" in inspect.getsource(llm.chat_strict_json)
+    assert "use_seed" not in inspect.getsource(pipeline.select_agent)
+    assert "use_seed" not in inspect.getsource(pipeline.generate_title)
 
 
 def test_judge_prompt_carries_the_allowed_faculty_block() -> None:
@@ -449,7 +494,8 @@ def _run_pipeline_with_fakes(question: str, chunks: list[dict], replies: dict[st
 
     calls: list[str] = []
 
-    async def fake_chat(system, user, *, json_mode=False, model=None, max_completion_tokens=None):
+    async def fake_chat(system, user, *, json_mode=False, model=None,
+                        max_completion_tokens=None, use_seed=False):
         assert not json_mode, "a pipeline stage asked for JSON mode"
         for marker, reply in replies.items():
             if marker in user:
@@ -572,6 +618,28 @@ def test_judge_rationale_never_reaches_the_answer() -> None:
     assert payload["trace"]["judgements"][0]["rationale"] == (
         "SCORING PROSE THAT MUST NOT BE SHOWN."
     )
+
+
+def test_corrupt_source_prefix_folds_onto_the_real_person() -> None:
+    """
+    A stray apostrophe in Chunk.source2 must not create a phantom 21st faculty
+    member. Measured on the live graph: one chunk carried "'Emrah Gecili" and
+    formed its own 504 character block beside the real 40,483 character one, so
+    the pipeline judged 21 candidates when only 20 faculty exist.
+    """
+    from app.retrievers import faculty_from_source
+
+    assert faculty_from_source("'Emrah Gecili_Publications") == "Emrah Gecili"
+    assert faculty_from_source('"Bin Huang_Abstracts') == "Bin Huang"
+    assert faculty_from_source("Emrah Gecili_Publications") == "Emrah Gecili"
+
+    chunks = [
+        {"text": "a", "source": "Emrah Gecili_Publications"},
+        {"text": "b", "source": "'Emrah Gecili_Abstracts"},
+    ]
+    blocks = pipeline.group_by_faculty(chunks)
+    assert len(blocks) == 1, f"corrupt prefix split into {len(blocks)} blocks"
+    assert blocks[0]["faculty"] == "Emrah Gecili"
 
 if __name__ == "__main__":
     failures = 0

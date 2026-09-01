@@ -311,8 +311,22 @@ async def retrieve_per_faculty(
 
 
 def faculty_from_source(source: str) -> str:
-    """'Rhonda Szczesniak_Publications' becomes 'Rhonda Szczesniak'."""
-    return (source or "").split("_")[0].strip()
+    """
+    'Rhonda Szczesniak_Publications' becomes 'Rhonda Szczesniak'.
+
+    Surrounding quotes are stripped too, because a few Chunk.source2 values in
+    the graph carry a stray leading apostrophe. Without this, one such chunk
+    forms its own block and the pipeline sees a 21st faculty member:
+
+        504 chars,   1 chunk    "'Emrah Gecili"   <- corrupt duplicate
+      40483 chars,  81 chunks   "Emrah Gecili"    <- the real one
+
+    That phantom is scored as a real candidate: it wastes a model call, pushes
+    the "assessing faculty relevance" count past the 20 faculty that exist, and
+    can surface in an answer as a mis-spelled name. Folding it back onto the
+    right person fixes all three.
+    """
+    return (source or "").split("_")[0].strip().strip("'\"").strip()
 
 
 def source_matches_faculty(source: str, faculty_name: str) -> bool:

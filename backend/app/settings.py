@@ -20,6 +20,17 @@ def _env(name: str, default: str = "") -> str:
     return value.strip() if isinstance(value, str) else value
 
 
+def _env_seed(name: str, default: int | None) -> int | None:
+    """Empty string means send no seed at all."""
+    raw = _env(name, "" if default is None else str(default))
+    if raw == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(_env(name, str(default)))
@@ -102,6 +113,13 @@ class Settings:
     # ---- Pipeline tuning ----
     max_concurrency: int = field(default_factory=lambda: _env_int("PIPELINE_MAX_CONCURRENCY", 10))
     retrieval_top_k: int = field(default_factory=lambda: _env_int("RETRIEVAL_TOP_K", 100))
+    # Second, wider retrieval pass used only when the first pass produces no
+    # ranked faculty at all. From Ankita's updated llm_utils.py.
+    expanded_top_k: int = field(default_factory=lambda: _env_int("EXPANDED_TOP_K", 400))
+    # Fixed seed on every pipeline call. gpt-5-mini rejects temperature=0, so a
+    # seed is the only reproducibility lever the API offers here, and it is
+    # best effort rather than a guarantee. Set LLM_SEED= (empty) to send none.
+    llm_seed: int | None = field(default_factory=lambda: _env_seed("LLM_SEED", 42))
     # Ceiling on how many faculty blocks get an LLM relevance judgement. 0 means
     # no ceiling, which is what the baseline app does: it judges every block the
     # retrieval produced. A cap is the single best cost control on an open ended
