@@ -1,13 +1,21 @@
 import { GraphIcon, PeopleIcon, SparkIcon } from './Icons';
 
-/** Starter questions offered before the first message. */
+/**
+ * Starter questions offered before the first message.
+ *
+ * All of these are expertise questions, which is the only kind the pipeline
+ * answers. "List every faculty member and their number of publications" used to
+ * be offered here and was answered by a stored graph query; that route is gone,
+ * so the question would now be scored against CV prose and answered poorly.
+ * Suggesting a question the app handles badly is worse than not suggesting one.
+ */
 export const EXAMPLE_QUESTIONS: string[] = [
   'Who has expertise in longitudinal modeling of cystic fibrosis outcomes?',
   'Which faculty work on spatial methods and environmental exposure?',
   'Find faculty with experience in Bayesian adaptive clinical trial design.',
   'Who collaborates most often on pediatric cancer outcomes research?',
   'Which faculty publish on machine learning applied to electronic health records?',
-  'List every faculty member and their number of publications.',
+  'Who has experience with missing data methods in longitudinal studies?',
 ];
 
 export interface EmptyStateProps {

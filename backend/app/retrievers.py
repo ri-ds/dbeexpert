@@ -4,18 +4,21 @@ retrievers.py
 Builds the neo4j_graphrag retrievers and normalises whatever they return into
 one internal chunk shape: {"text": str, "source": str}.
 
-Two corrections against the original app, both verified by inspecting the
-restored graph rather than assumed:
+This is a faithful port of the baseline app's retrieval layer. Three things in
+here are known to be weaker than what they replaced, and all three are
+deliberate, because each one changes which chunks reach the relevance judge and
+therefore which faculty come back:
 
-1. The hybrid retriever was pairing the vector index with `text_embeddings2`,
-   a fulltext index defined over `Chunk.embedding`. Keyword searching a float
-   array cannot contribute anything, so the keyword half of that hybrid search
-   was inert. The graph also ships `chunk_text_fulltext` over `Chunk.text`,
-   which is the real partner index and is what gets used here.
+1. The hybrid retriever pairs the vector index with a fulltext index over
+   `Chunk.embedding` (see settings.fulltext_index). Keyword searching a float
+   array contributes nothing, so the keyword half of the hybrid search is inert.
 
-2. Chunk nodes carry `source2`, `id2`, `index`, `text`, and `embedding`. There
-   is no `source` property, so requesting one returned nulls. Only `source2` is
-   requested now and it is normalised to `source` internally.
+2. Results are parsed out of the retriever's stringified record with regexes
+   rather than read from the record's real fields. Any chunk of CV text
+   containing a quote or bracket can defeat that parse and be dropped silently.
+
+3. `source_matches_faculty` matches on ANY name token, so a chunk belonging to
+   one person can be attributed to another who shares a first or last name.
 
 Chunk.source2 follows the convention '<Faculty Name>_<Category>', for example
 'Rhonda Szczesniak_Publications', which is what maps a chunk back to a person.
@@ -23,15 +26,14 @@ Chunk.source2 follows the convention '<Faculty Name>_<Category>', for example
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import logging
 import re
 from typing import Any, Iterable
 
-import neo4j
 from neo4j_graphrag.embeddings.openai import OpenAIEmbeddings
 from neo4j_graphrag.retrievers import HybridCypherRetriever, VectorRetriever
-from neo4j_graphrag.types import RetrieverResultItem
 
 from .db import get_driver
 from .settings import settings
@@ -39,9 +41,14 @@ from .settings import settings
 log = logging.getLogger(__name__)
 
 # Expands each matching chunk out into its neighbourhood so the model sees the
-# graph context around a hit, not just the isolated text. Carried over from the
-# original app with the traversal left intact.
+# graph context around a hit, not just the isolated text.
+#
+# Carried over verbatim, including the apoc.text.join calls. Returning real
+# lists instead would be cleaner, but the parser below reads the stringified
+# record and splits on the '\n---\n' separator these joins produce, and the two
+# have to agree.
 HYBRID_CONTEXT_QUERY = """
+// 0) Start with top matching chunk nodes
 WITH node AS chunk
 
 OPTIONAL MATCH (chunk)<-[r1]-(n1)
@@ -74,14 +81,13 @@ WITH base_nodes + next_nodes AS final_nodes,
 WITH [n IN final_nodes WHERE n.text IS NOT NULL | n] AS chunks, final_rels AS rels
 
 RETURN
-  [c IN chunks | c.text] AS chunk_texts,
-  [c IN chunks | coalesce(c.source2, '')] AS chunk_sources,
-  [
+  apoc.text.join([c IN chunks | c.text], '\\n---\\n') AS chunk_texts,
+  apoc.text.join([c IN chunks | coalesce(c.source2, c.source, '')], '\\n---\\n') AS chunk_sources,
+  apoc.text.join([
     r IN rels |
     coalesce(startNode(r).name, 'Unknown') + ' - ' + type(r) +
-    '(' + coalesce(toString(r.details), '') + ')' + ' -> ' +
-    coalesce(endNode(r).name, 'Unknown')
-  ] AS relationship_texts
+    '(' + coalesce(r.details, '') + ')' + ' -> ' + coalesce(endNode(r).name, 'Unknown')
+  ], '\\n---\\n') AS relationship_texts
 """
 
 _embedder: OpenAIEmbeddings | None = None
@@ -90,6 +96,10 @@ _embedder: OpenAIEmbeddings | None = None
 def get_embedder() -> OpenAIEmbeddings:
     global _embedder
     if _embedder is None:
+        # settings.embedding_model is text-embedding-ada-002, which is also the
+        # neo4j_graphrag default the baseline app gets from a bare
+        # OpenAIEmbeddings(). Named explicitly so a library default change
+        # cannot silently move the query into a different vector space.
         _embedder = OpenAIEmbeddings(
             model=settings.embedding_model,
             api_key=settings.openai_api_key,
@@ -97,50 +107,22 @@ def get_embedder() -> OpenAIEmbeddings:
     return _embedder
 
 
-def _hybrid_formatter(record: neo4j.Record) -> RetrieverResultItem:
-    """
-    Keep the record's real lists instead of letting the library stringify it.
-
-    The default formatter renders the whole record with repr, which then has to
-    be recovered with regexes that break as soon as a chunk of CV text contains
-    a bracket or a quote. Reading the fields directly removes that whole class
-    of bug.
-    """
-    return RetrieverResultItem(
-        content="",
-        metadata={
-            "chunk_texts": list(record.get("chunk_texts") or []),
-            "chunk_sources": list(record.get("chunk_sources") or []),
-            "relationship_texts": list(record.get("relationship_texts") or []),
-        },
-    )
-
-
-def _vector_formatter(record: neo4j.Record) -> RetrieverResultItem:
-    node = record.get("node") or {}
-    text = str(node.get("text") or "")
-    return RetrieverResultItem(
-        content=text,
-        metadata={
-            "text": text,
-            "source2": node.get("source2") or "",
-            "score": record.get("score"),
-        },
-    )
-
-
 def build_retriever(mode: str):
     """mode is 'hybrid' or 'vector'."""
     driver = get_driver()
     embedder = get_embedder()
 
+    # No result_formatter on either retriever. The library's default formatter
+    # renders each record with repr, and the parser below is written against
+    # that repr. Supplying a formatter that hands over the real fields would be
+    # more robust and would recover chunks the regexes drop, which is exactly
+    # the divergence being avoided here.
     if mode == "vector":
         return VectorRetriever(
             driver,
             index_name=settings.vector_index,
             embedder=embedder,
-            return_properties=["text", "source2", "index"],
-            result_formatter=_vector_formatter,
+            return_properties=["text", "source", "source2"],
             neo4j_database=settings.neo4j_database,
         )
 
@@ -150,7 +132,6 @@ def build_retriever(mode: str):
         fulltext_index_name=settings.fulltext_index,
         retrieval_query=HYBRID_CONTEXT_QUERY,
         embedder=embedder,
-        result_formatter=_hybrid_formatter,
         neo4j_database=settings.neo4j_database,
     )
 
@@ -163,94 +144,85 @@ def normalise_items(items: Iterable[Any]) -> list[dict[str, str]]:
     """
     Flatten retriever results into [{"text", "source"}].
 
-    Both retrievers are configured with result formatters that put the real
-    record fields in `metadata`, so this reads structured data. The string
-    parsing path below survives only as a fallback for a formatter that did not
-    take effect.
+    Auto-detects hybrid versus vector from the content, so one parser serves
+    both retrievers.
+
+    Note that this does NOT deduplicate. The baseline app dedupes only on the
+    multi-query follow-up path, so a chunk returned twice within a single search
+    is counted twice when the per-faculty blocks are built. Deduping here would
+    change the text those blocks contain.
     """
     chunks: list[dict[str, str]] = []
 
     for item in items:
-        metadata = getattr(item, "metadata", None)
-        if isinstance(metadata, dict) and ("chunk_texts" in metadata or "text" in metadata):
-            chunks.extend(_from_mapping(metadata))
-            continue
+        combined = getattr(item, "content", item)
+        if not isinstance(combined, str):
+            combined = str(combined)
 
-        content = getattr(item, "content", item)
-        if isinstance(content, dict):
-            chunks.extend(_from_mapping(content))
-        elif isinstance(content, str) and content.strip():
-            chunks.extend(_from_string(content))
+        if "chunk_texts=" in combined:
+            chunks.extend(_from_hybrid(combined))
+        else:
+            chunks.extend(_from_vector(combined))
 
-    return dedupe(chunks)
+    return chunks
 
 
-def _from_mapping(mapping: dict[str, Any]) -> list[dict[str, str]]:
-    texts = mapping.get("chunk_texts")
-    if isinstance(texts, list):
-        sources = mapping.get("chunk_sources") or []
-        out = []
-        for i, text in enumerate(texts):
-            if not text:
-                continue
-            source = sources[i] if i < len(sources) else ""
-            out.append({"text": str(text), "source": str(source or "")})
-        return out
+def _from_hybrid(combined: str) -> list[dict[str, str]]:
+    """
+    Pull the joined text and source blocks out of a stringified hybrid record.
 
-    text = mapping.get("text")
-    if text:
-        source = mapping.get("source2") or mapping.get("source") or ""
-        return [{"text": str(text), "source": str(source)}]
+    The separator is the six literal characters \\n---\\n, not a real newline:
+    the record's repr escapes the newlines apoc.text.join wrote, so the escaped
+    form is what appears in this string.
+    """
+    match = re.search(r"chunk_texts=(.*?)(?=chunk_sources=)", combined, re.DOTALL)
+    chunk_texts = match.group(1).strip() if match else ""
 
-    return []
+    match2 = re.search(r"chunk_sources=(.*?)(?=relationship_texts=)", combined, re.DOTALL)
+    chunk_sources = match2.group(1).strip() if match2 else ""
 
+    texts = [t for t in chunk_texts.split("\\n---\\n") if t.strip()]
+    sources = [s for s in chunk_sources.split("\\n---\\n") if s.strip()]
 
-_TEXT_RE = re.compile(r"'text':\s*'((?:[^'\\]|\\.)*)'")
-_SOURCE_RE = re.compile(r"'source2?':\s*'((?:[^'\\]|\\.)*)'")
-_LIST_RE = re.compile(r"chunk_texts=(\[.*?\])\s+chunk_sources=(\[.*?\])", re.DOTALL)
+    # zip stops at the shorter list, so a text with no matching source is
+    # dropped rather than paired with the wrong person.
+    return [{"text": t, "source": s} for t, s in zip(texts, sources)]
 
 
-def _from_string(content: str) -> list[dict[str, str]]:
-    """Fallback for retriever versions that stringify their records."""
-    import ast
+def _from_vector(content: Any) -> list[dict[str, str]]:
+    """Parse one VectorRetriever item, which carries a single chunk."""
+    parsed = None
+    if isinstance(content, dict):
+        parsed = content
+    else:
+        try:
+            candidate = ast.literal_eval(content)
+            if isinstance(candidate, dict):
+                parsed = candidate
+        except Exception:
+            parsed = None
 
-    if "chunk_texts=" in content:
-        match = _LIST_RE.search(content)
-        if match:
-            try:
-                texts = ast.literal_eval(match.group(1))
-                sources = ast.literal_eval(match.group(2))
-            except (ValueError, SyntaxError):
-                return []
-            out = []
-            for i, text in enumerate(texts or []):
-                if not text:
-                    continue
-                source = sources[i] if i < len(sources or []) else ""
-                out.append({"text": str(text), "source": str(source or "")})
-            return out
+    if parsed is not None:
+        text = str(parsed.get("text", "")).strip()
+        source = str(parsed.get("source2") or parsed.get("source") or "").strip()
+    else:
+        text_match = re.search(r"'text':\s*'((?:[^'\\]|\\.)*)'", content)
+        source_match = re.search(r"'source2?':\s*'((?:[^'\\]|\\.)*)'", content)
+        text = text_match.group(1).strip() if text_match else ""
+        source = source_match.group(1).strip() if source_match else ""
+
+    if not text:
         return []
-
-    try:
-        parsed = ast.literal_eval(content)
-        if isinstance(parsed, dict):
-            return _from_mapping(parsed)
-    except (ValueError, SyntaxError):
-        pass
-
-    text_match = _TEXT_RE.search(content)
-    if text_match:
-        source_match = _SOURCE_RE.search(content)
-        return [
-            {
-                "text": text_match.group(1).strip(),
-                "source": source_match.group(1).strip() if source_match else "",
-            }
-        ]
-    return []
+    return [{"text": text, "source": source}]
 
 
 def dedupe(chunks: list[dict[str, str]]) -> list[dict[str, str]]:
+    """
+    Drop repeated (source, text) pairs.
+
+    Applied only where the baseline applies it: across the several searches a
+    follow-up question runs, never within a single search.
+    """
     seen: set[tuple[str, str]] = set()
     out: list[dict[str, str]] = []
     for chunk in chunks:
@@ -263,19 +235,28 @@ def dedupe(chunks: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 # ----------------------------------------------------------------------
-# Coverage complete retrieval
+# Coverage retrieval
 # ----------------------------------------------------------------------
 
-# Plain top_k retrieval gives whichever faculty happen to rank highest, which
-# means a broad question can silently omit people. Measured on the live graph,
-# "which faculty have expertise in machine learning" reached all 20, but "list
-# all faculty members" reached only 17, so coverage depends on how the question
-# happens to embed. That is not an acceptable basis for "which faculty ...".
+# Plain top_k retrieval returns whichever passages rank highest, which means a
+# broad question silently omits people. Measured on this graph:
+#
+#   "which faculty have expertise in cystic fibrosis"   9 of 20 reached
+#   "spatial methods and environmental exposure"       14 of 20
+#   "Bayesian adaptive clinical trial design"          19 of 20
+#
+# The 11 faculty missing from the first question were never scored at all, and
+# nothing in the answer said so. That is not a ranking problem to be tuned, it is
+# a coverage hole.
 #
 # This takes the same single query embedding, pulls a wide candidate pool from
 # the vector index, groups by faculty, and keeps each person's best passages. No
-# extra embedding calls and no extra LLM calls, and every faculty member with any
-# material is guaranteed a fair hearing.
+# extra embedding call and no extra LLM call, so every faculty member is
+# guaranteed a hearing for the cost of one more Cypher query.
+#
+# Note this is a deliberate divergence from the baseline app, which has the same
+# coverage hole. It is here because not missing people matters more than matching
+# ankitaexpert exactly.
 _PER_FACULTY_QUERY = """
 CALL db.index.vector.queryNodes($index, $pool, $vector) YIELD node, score
 WHERE node.source2 IS NOT NULL AND node.text IS NOT NULL
@@ -292,8 +273,9 @@ async def retrieve_per_faculty(
     """
     Retrieve the best passages for every faculty member for one query.
 
-    Returns the same {"text", "source"} shape as the other retrievers so the rest
-    of the pipeline is unchanged.
+    Returns the same {"text", "source"} shape as the other retrievers, so the
+    rest of the pipeline is unchanged. Failure is non-fatal: an empty list means
+    the caller falls back to whatever the ranked search found.
     """
     from .db import run_read
 
@@ -316,7 +298,9 @@ async def retrieve_per_faculty(
                 text = (passage or {}).get("text")
                 if not text:
                     continue
-                chunks.append({"text": str(text), "source": str((passage or {}).get("source") or "")})
+                chunks.append(
+                    {"text": str(text), "source": str((passage or {}).get("source") or "")}
+                )
         return chunks
 
     try:
@@ -335,21 +319,16 @@ def source_matches_faculty(source: str, faculty_name: str) -> bool:
     """
     True when a chunk's source belongs to the given person.
 
-    Prefers an exact match on the faculty portion of source2 and falls back to
-    token overlap, which is what the original app relied on exclusively.
+    Matches if ANY name token longer than two characters appears anywhere in the
+    source. That is loose enough to attribute one person's chunks to another who
+    shares a first or last name, which inflates the evidence block and can move a
+    relevance score.
+
+    Requiring an exact source2 prefix fixes it, and is what this function did
+    before. It is reverted because a changed evidence block changes the score,
+    and a changed score can cross the 60/40 cutoffs and add or remove someone
+    from the answer.
     """
-    if not source:
-        return False
-
-    prefix = faculty_from_source(source).lower()
-    target = faculty_name.strip().lower()
-    if prefix and prefix == target:
-        return True
-
-    tokens = [t for t in re.split(r"[,\s_]+", target) if len(t) > 2]
-    if not tokens:
-        return False
-    haystack = source.lower()
-    return all(token in haystack for token in tokens) or (
-        len(tokens) > 1 and tokens[-1] in haystack
-    )
+    s = (source or "").lower()
+    parts = [p for p in re.split(r"[,\s_]+", faculty_name.lower()) if len(p) > 2]
+    return any(p in s for p in parts)

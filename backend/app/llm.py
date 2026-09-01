@@ -46,7 +46,10 @@ def get_client() -> AsyncOpenAI:
         _client = AsyncOpenAI(
             api_key=settings.openai_api_key,
             timeout=float(settings.request_timeout_s),
-            max_retries=3,
+            # The SDK default, which is what the baseline app gets from a bare
+            # AsyncOpenAI(). Retrying more often would mask a failure the
+            # baseline surfaces as an error.
+            max_retries=2,
         )
     return _client
 
@@ -112,6 +115,49 @@ async def chat_json(system: str, user: str, *, model: str | None = None) -> Any:
     """Completion in JSON mode, parsed. Returns None when nothing usable came back."""
     raw = await chat(system, user, json_mode=True, model=model)
     return parse_json(raw)
+
+
+async def chat_strict_json(system: str, user: str, *, model: str | None = None) -> Any:
+    """
+    Completion with NO response_format, parsed strictly.
+
+    This is the shape the baseline app's pipeline calls use: a plain two message
+    completion with no JSON mode, whose reply is either valid JSON or the bare
+    sentinel string NONE. Both of those behaviours matter.
+
+    JSON mode constrains the model's output space, so the same prompt against
+    the same evidence yields different text with it on. And the tolerant
+    `parse_json` below rescues malformed replies that the baseline discards,
+    which turns a dropped faculty member into a kept one. Neither is wrong, but
+    both diverge, so the pipeline uses this instead.
+    """
+    raw = await chat(system, user, json_mode=False, model=model)
+    return parse_strict(raw)
+
+
+def parse_strict(raw: str) -> Any:
+    """
+    Exactly the baseline app's parse: `json.loads` inside a bare try/except,
+    with the literal string NONE treated as "no result".
+
+    No fence stripping and no brace scavenging, matching llm_utils.py in the
+    baseline. A reply this cannot read is one the baseline could not read either,
+    and it must be discarded the same way.
+
+    Note what that costs if the chat model is ever changed: gpt-4o wraps its JSON
+    in a ```json fence, which this discards, so every judge and extract reply
+    gets dropped and answers collapse to "No matching faculty were found for
+    that question." Verified against the live API. That is the baseline's
+    behaviour too, not a bug introduced here, but it does make the chat model and
+    this parser a matched pair.
+    """
+    text = (raw or "").strip()
+    if text == "NONE":
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
 
 
 async def embed(text: str) -> list[float]:

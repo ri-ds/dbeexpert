@@ -2906,3 +2906,34 @@ kbd {
     max-width: 12ch;
   }
 }
+
+/* The original app's answer, rendered verbatim.
+   ---------------------------------------------------------------------------
+   Its chat bubble sets `white-space: pre-wrap` and converts newlines to <br>,
+   and it never turns "- item" into a real list, so bullets stay as literal
+   dashes on their own lines. Reproduced here so the two apps can be compared
+   side by side. Shares the surface treatment of .prose so it does not look like
+   a different kind of message. */
+.legacy-answer {
+  padding: var(--s-4) var(--s-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.legacy-answer strong {
+  font-weight: 650;
+}
+
+.legacy-answer code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.9em;
+}
+
+.legacy-answer a {
+  color: var(--accent, currentColor);
+  text-decoration: underline;
+}

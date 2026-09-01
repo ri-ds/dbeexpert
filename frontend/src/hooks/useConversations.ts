@@ -251,6 +251,10 @@ function normalizeResponse(value: unknown): QueryResponse | null {
     intent: asString(record['intent']),
     agent: asString(record['agent']),
     answerText: asString(record['answerText']),
+    // Conversations stored before this field existed rehydrate as null, which is
+    // the pre-existing "render cards" behaviour, so old history still displays
+    // the way it did when it was written.
+    answerFormat: asString(record['answerFormat']) === 'legacy' ? 'legacy' : null,
     faculty: normalizeFaculty(record['faculty']),
     cypher: normalizeCypher(record['cypher']),
     trace: normalizeTrace(record['trace']),

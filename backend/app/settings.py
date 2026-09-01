@@ -39,18 +39,41 @@ class Settings:
     neo4j_password: str = field(default_factory=lambda: _env("NEO4J_PASSWORD", "dbepassword123"))
     neo4j_database: str = field(default_factory=lambda: _env("NEO4J_DATABASE", "neo4j"))
 
-    # ---- Index names, verified against the restored dump ----
+    # ---- Index names ----
     # text_embeddings is a 1536 dimension cosine vector index on Chunk.embedding.
     vector_index: str = field(default_factory=lambda: _env("NEO4J_VECTOR_INDEX", "text_embeddings"))
-    # The restored graph ships two fulltext indexes. text_embeddings2 is defined
-    # over Chunk.embedding, which cannot be keyword searched in any useful way,
-    # so the correct hybrid partner is chunk_text_fulltext over Chunk.text.
+    # text_embeddings2 is a fulltext index over Chunk.embedding, a float array,
+    # so keyword searching it contributes nothing and the keyword half of the
+    # hybrid search is effectively inert.
+    #
+    # That is deliberate. The graph also ships chunk_text_fulltext over
+    # Chunk.text, which is the index a hybrid search actually wants, and pointing
+    # here at it measurably changes which chunks come back and therefore which
+    # faculty an open ended question returns. The baseline app runs on
+    # text_embeddings2, so parity requires running on it too. Set
+    # NEO4J_FULLTEXT_INDEX=chunk_text_fulltext to opt back into the better index.
     fulltext_index: str = field(
-        default_factory=lambda: _env("NEO4J_FULLTEXT_INDEX", "chunk_text_fulltext")
+        default_factory=lambda: _env("NEO4J_FULLTEXT_INDEX", "text_embeddings2")
     )
 
     # ---- OpenAI ----
     openai_api_key: str = field(default_factory=lambda: _env("OPENAI_API_KEY"))
+    # gpt-5-mini, matching the baseline app, which hardcodes it.
+    #
+    # Worth knowing what this costs: gpt-5-mini is a reasoning model and REJECTS
+    # temperature. The API answers "Unsupported value: 'temperature' does not
+    # support 0 with this model. Only the default (1) value is supported." Locked
+    # at 1, the same judge prompt over the same CV text scores differently on
+    # every run (measured: 60, 60, 50, 40, 60), and the cutoffs in pipeline.py
+    # are sharp, so a faculty member can move in and out of the answer between
+    # two identical requests. Answers are therefore NOT reproducible, and no
+    # amount of code alignment changes that.
+    #
+    # Switching to gpt-4o would allow temperature=0 and make the faculty
+    # selection reproducible, but it is a different model with different
+    # judgement, it wraps its JSON in ```json fences (which the baseline's strict
+    # parser discards), and even at temperature=0 long generations still diverge.
+    # It also would not match the baseline, which is the point of this build.
     chat_model: str = field(default_factory=lambda: _env("OPENAI_CHAT_MODEL", "gpt-5-mini"))
     # Naming a conversation is a four word job, so it gets its own cheap model.
     # Deliberately not a reasoning model: those bill hidden reasoning tokens that
@@ -79,10 +102,33 @@ class Settings:
     # ---- Pipeline tuning ----
     max_concurrency: int = field(default_factory=lambda: _env_int("PIPELINE_MAX_CONCURRENCY", 10))
     retrieval_top_k: int = field(default_factory=lambda: _env_int("RETRIEVAL_TOP_K", 100))
-    # Hard ceiling on how many faculty blocks get an LLM relevance judgement,
-    # which is the dominant cost driver on open ended questions.
-    max_judged_faculty: int = field(default_factory=lambda: _env_int("MAX_JUDGED_FACULTY", 24))
-    request_timeout_s: int = field(default_factory=lambda: _env_int("LLM_REQUEST_TIMEOUT", 120))
+    # Ceiling on how many faculty blocks get an LLM relevance judgement. 0 means
+    # no ceiling, which is what the baseline app does: it judges every block the
+    # retrieval produced. A cap is the single best cost control on an open ended
+    # question, but capping changes which people are considered, so parity
+    # requires leaving it off. Set MAX_JUDGED_FACULTY to a positive number to
+    # bound the fan out again.
+    max_judged_faculty: int = field(default_factory=lambda: _env_int("MAX_JUDGED_FACULTY", 0))
+    # Union a per-faculty coverage query into the discovery retrieval, so every
+    # faculty member is judged on every question.
+    #
+    # OFF by default, because it is a deliberate divergence from the baseline app
+    # and the goal here is matching that app. Measured with it off, ranked
+    # retrieval alone reaches only 9 of 20 faculty on "expertise in cystic
+    # fibrosis" and 14 of 20 on "spatial methods" — the rest are never scored and
+    # nothing in the answer says so. The baseline has exactly the same hole.
+    #
+    # Set COVERAGE_RETRIEVAL=1 to reach 20 of 20 on every question, accepting
+    # that this app will then find faculty the baseline misses, and that each
+    # question costs more because 20 people get judged instead of 9.
+    coverage_retrieval: bool = field(
+        default_factory=lambda: _env("COVERAGE_RETRIEVAL", "0").lower() in {"1", "true", "yes"}
+    )
+    # Matches the OpenAI SDK's own default, which is what the baseline app runs
+    # on because it constructs AsyncOpenAI() with no arguments. A shorter timeout
+    # turns a slow judge call into an error response rather than an answer, which
+    # is a visible difference against the baseline.
+    request_timeout_s: int = field(default_factory=lambda: _env_int("LLM_REQUEST_TIMEOUT", 600))
     # Server side ceiling on a generated Cypher transaction. Generated queries
     # are not reviewed queries, so an expensive variable length pattern must not
     # be able to pin the database indefinitely.

@@ -151,6 +151,18 @@ export interface QueryResponse {
   intent: string | null;
   agent: string | null;
   answerText: string | null;
+  /**
+   * How to render this answer.
+   *
+   * "legacy" means answerText already holds the complete answer, formatted the
+   * way the original Streamlit app formats it, so it is rendered on its own and
+   * the faculty cards are suppressed. `faculty` is still populated underneath
+   * for feedback reports and the pipeline disclosure.
+   *
+   * null means the older behaviour: answerText is a lead in, and the cards or
+   * the result table carry the answer.
+   */
+  answerFormat: 'legacy' | null;
   faculty: FacultyResult[];
   cypher: CypherResult | null;
   trace: QueryTrace | null;

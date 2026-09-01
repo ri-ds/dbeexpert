@@ -98,6 +98,14 @@ class QueryResponse(BaseModel):
     intent: str | None = None
     agent: str | None = None
     answerText: str | None = None
+    # How the client should render this answer.
+    #
+    #   "legacy"  answerText already holds the whole answer, formatted the way
+    #             the baseline app formats it, so render that and nothing else.
+    #             `faculty` is still populated for feedback and the trace.
+    #   None      answerText is prose about a table, or there is none, so the
+    #             client falls back to cards and the result table.
+    answerFormat: Literal["legacy"] | None = None
     faculty: list[FacultyResult] = Field(default_factory=list)
     cypher: CypherResult | None = None
     trace: Trace = Field(default_factory=Trace)

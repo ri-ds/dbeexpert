@@ -5,6 +5,7 @@ import CypherBlock from './CypherBlock';
 import FacultyCard from './FacultyCard';
 import FeedbackDialog from './FeedbackDialog';
 import { AlertIcon, CheckIcon, FeedbackIcon, PeopleIcon, SparkIcon } from './Icons';
+import LegacyAnswer from './LegacyAnswer';
 import PipelineTrace from './PipelineTrace';
 import ResultTable from './ResultTable';
 import StageIndicator from './StageIndicator';
@@ -106,9 +107,15 @@ function AssistantMessage({
   signedInAs,
 }: AssistantMessageProps) {
   const response = message.response;
-  const faculty = response?.faculty ?? [];
   const cypher = response?.cypher ?? null;
   const answerText = response?.answerText ?? null;
+
+  // "legacy" means answerText is the complete answer, already formatted the way
+  // the original app formats it. The cards would then repeat the same names and
+  // bullets underneath it, so they are suppressed. The data is still in the
+  // payload for feedback reports and the pipeline disclosure.
+  const isLegacy = response?.answerFormat === 'legacy';
+  const faculty = isLegacy ? [] : (response?.faculty ?? []);
 
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState(false);
@@ -162,15 +169,19 @@ function AssistantMessage({
         ) : null}
 
         {!message.pending && answerText && answerText.trim().length > 0 ? (
-          <div className="prose">
-            {answerText
-              .split(/\n{2,}/)
-              .map((paragraph) => paragraph.trim())
-              .filter((paragraph) => paragraph.length > 0)
-              .map((paragraph, index) => (
-                <p key={index}>{paragraph}</p>
-              ))}
-          </div>
+          isLegacy ? (
+            <LegacyAnswer text={answerText} />
+          ) : (
+            <div className="prose">
+              {answerText
+                .split(/\n{2,}/)
+                .map((paragraph) => paragraph.trim())
+                .filter((paragraph) => paragraph.length > 0)
+                .map((paragraph, index) => (
+                  <p key={index}>{paragraph}</p>
+                ))}
+            </div>
+          )
         ) : null}
 
         {!message.pending && faculty.length > 0 ? (

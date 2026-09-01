@@ -168,7 +168,10 @@ services:
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
       NEO4J_DATABASE: neo4j
       NEO4J_VECTOR_INDEX: ${NEO4J_VECTOR_INDEX:-text_embeddings}
-      NEO4J_FULLTEXT_INDEX: ${NEO4J_FULLTEXT_INDEX:-chunk_text_fulltext}
+      # text_embeddings2 matches the original Streamlit app. chunk_text_fulltext
+      # is the technically better index but retrieves a different set of chunks,
+      # which changes which faculty an open ended question returns.
+      NEO4J_FULLTEXT_INDEX: ${NEO4J_FULLTEXT_INDEX:-text_embeddings2}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY must be set in .env}
       OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-5-mini}
       # MUST match the model that wrote the vectors in the dump. Do not change to

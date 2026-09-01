@@ -72,19 +72,32 @@ def schema_from_ontology(graph: Graph) -> dict[str, Any]:
     return {"nodes": nodes, "relationships": relationships}
 
 
-def _load(filename: str) -> dict[str, Any]:
+def _load(filename: str, graph: Graph | None = None) -> dict[str, Any]:
+    """
+    Parse one Turtle file and return its schema.
+
+    When `graph` is supplied the file is parsed INTO that graph rather than a
+    fresh one. See `load_agent_schemas` for why that matters.
+    """
     path = Path(settings.ontology_dir) / filename
-    graph = Graph()
-    graph.parse(str(path))
-    return schema_from_ontology(graph)
+    target = Graph() if graph is None else graph
+    target.parse(str(path))
+    return schema_from_ontology(target)
 
 
 def _labels(schema: dict[str, Any]) -> tuple[list[str], list[str], list[tuple[str, str, str]]]:
+    """
+    Flatten a schema into the three label lists the router prompt renders.
+
+    Relations and the potential schema are deliberately NOT deduplicated. The
+    original app built these with a plain list comprehension over every
+    relationship, so a relation declared with several domain/range pairs appears
+    once per pair, and that repetition is visible in the agent descriptions the
+    router reads. Deduplicating here would change the router's prompt text.
+    """
     entities = list(schema["nodes"].keys())
-    relations = list(dict.fromkeys(rel["type"] for rel in schema["relationships"]))
-    potential = list(
-        dict.fromkeys((rel["from"], rel["type"], rel["to"]) for rel in schema["relationships"])
-    )
+    relations = [rel["type"] for rel in schema["relationships"]]
+    potential = [(rel["from"], rel["type"], rel["to"]) for rel in schema["relationships"]]
     return entities, relations, potential
 
 
@@ -98,6 +111,32 @@ def _merge(*schemas: dict[str, Any]) -> dict[str, Any]:
     deduped = list({(r["from"], r["type"], r["to"]): r for r in relationships}.values())
     return {"nodes": nodes, "relationships": deduped}
 
+
+# The Research agent's entity roster is a literal in the baseline app rather
+# than the merged FRAPO + BIBOS class list, so it is carried over verbatim.
+# Changing it would change the router prompt.
+_RESEARCH_ENTITIES = [
+    'AccountStatement', 'AdmissionApplication', 'AnnualTurnover', 'ArticleProcessingCharge',
+    'AvailableFunds', 'BudgetedAmount', 'Bursary', 'College', 'Commitments',
+    'ComputationalAgent', 'ConferenceFee', 'ConsortiumAgreement', 'ConsultancyAgreement',
+    'DataRepository', 'Deliverable', 'Department', 'DocumentRepository',
+    'EmploymentApplication', 'EmploymentContract', 'Endowment', 'ExpenditureToDate',
+    'Faculty', 'Fellowship', 'FinancialControlSystem', 'FundingApplication',
+    'FundingProgramme', 'GovernmentOrganization', 'HostInstitution', 'Income',
+    'Investigation', 'Investment', 'Laboratory', 'Legacy', 'Library', 'MaterialOutput',
+    'NotForProfitOrganization', 'Owner', 'Payment', 'ProjectBudget', 'Purchase',
+    'Quotation', 'RegistrationAgency', 'RegistrationAuthority', 'ResearchGroup',
+    'ResearchInformationSystem', 'ResearchInstitute', 'SME', 'Scholarship',
+    'ScholarshipApplication', 'ServiceContract', 'ServiceContractFee', 'SpinOffCompany',
+    'Studentship', 'Subscription', 'Tender', 'University', 'Vendor', 'Account', 'Division',
+    'Endeavour', 'Expenditure', 'Grant', 'Invoice', 'PostalAddress', 'PurchaseOrder',
+    'Purchaser', 'Document', 'Group', 'Project', 'Company', 'ComputationalService',
+    'Equipment', 'Gift', 'Manufacturer', 'Output', 'Service', 'Budget', 'Facility',
+    'FundingAgency', 'InfrastructureEntity', 'Repository', 'Stipend', 'Supplier',
+    'Contract', 'Fee', 'Status', 'Application', 'BudgetInformation', 'Funding', 'Person',
+    'Organization', 'FinancialEntity', 'BudgetCategory', 'Agent', 'Affiliation', 'Journal',
+    'Conference', 'Publication',
+]
 
 # A generic fallback domain for questions that do not map onto any of the
 # published ontologies. Kept from the original app.
@@ -163,14 +202,26 @@ _ONTOLOGY_FILES: dict[str, str] = {
 @functools.lru_cache(maxsize=1)
 def load_agent_schemas() -> dict[str, dict[str, Any]]:
     """
-    Build every agent schema once per process. Parsing eleven Turtle files
-    takes a noticeable moment, and the result never changes at runtime.
+    Build every agent schema once per process, exactly as the original app does.
+
+    One rdflib Graph is reused across all nine numbered ontologies, so each
+    parse ADDS to whatever was already loaded and every agent past the first
+    advertises a cumulative vocabulary: the Education agent carries FOAF's
+    classes too, the Grant agent carries all eight before it, and so on.
+
+    This is a faithful port, not an endorsement. Parsing each file into its own
+    Graph gives genuinely distinct agent descriptions and is the better design,
+    but it changes the text of the router prompt and therefore which agent is
+    selected, which is a visible difference against the baseline app. The agent
+    choice does not affect the answer either way, only the name reported in the
+    trace, so fidelity wins here.
     """
     schemas: dict[str, dict[str, Any]] = {}
 
+    shared = Graph()
     for agent_name, filename in _ONTOLOGY_FILES.items():
         try:
-            entities, relations, potential = _labels(_load(filename))
+            entities, relations, potential = _labels(_load(filename, shared))
         except Exception as exc:
             log.warning("Skipping %s, could not parse %s: %s", agent_name, filename, exc)
             continue
@@ -182,13 +233,20 @@ def load_agent_schemas() -> dict[str, dict[str, Any]]:
         }
 
     # The research domain spans two published ontologies, FRAPO for funded
-    # research administration and BIBOS for bibliographic records.
+    # research administration and BIBOS for bibliographic records. Each is parsed
+    # into its own Graph here because the original app does exactly that.
+    #
+    # Its entity list is then overridden with a hardcoded roster rather than the
+    # merged one. That literal is what the baseline app ships, so it is carried
+    # over verbatim; the merged relations and potential schema are still used.
     try:
         research = _merge(_load("frapo.ttl"), _load("bibos.ttl"))
-        entities, relations, potential = _labels(research)
+        _, relations, potential = _labels(research)
+        # Research is the one agent whose relations are deduplicated by label in
+        # the baseline app, so it is the one place that dedup is reproduced.
         schemas["Research Agent"] = {
-            "entities": entities,
-            "relations": relations,
+            "entities": list(_RESEARCH_ENTITIES),
+            "relations": list(dict.fromkeys(relations)),
             "potential_schema": potential,
             "hint": AGENT_HINTS["Research Agent"],
         }
@@ -209,16 +267,18 @@ def agent_names() -> list[str]:
     return list(load_agent_schemas().keys())
 
 
-def describe_agents(max_terms: int = 28) -> str:
-    """Compact router prompt block. Long class lists are truncated."""
-    blocks = []
-    for name, schema in load_agent_schemas().items():
-        entities = schema["entities"][:max_terms]
-        relations = schema["relations"][:max_terms]
-        blocks.append(
-            f"Agent: {name}\n"
-            f"Covers: {schema['hint']}\n"
-            f"Entities: {', '.join(entities)}\n"
-            f"Relations: {', '.join(relations)}"
-        )
-    return "\n\n".join(blocks)
+def describe_agents() -> str:
+    """
+    Router prompt block, formatted exactly as the baseline app's
+    `OntologyAgent.describe()` builds it.
+
+    No hint line and no truncation. Both were improvements, and both changed the
+    text the router sees, so both are gone: the whole class list goes into the
+    prompt the way the original sends it.
+    """
+    return "\n\n".join(
+        f"Agent: {name}\n"
+        f"Entities: {', '.join(schema['entities'])}\n"
+        f"Relations: {', '.join(schema['relations'])}"
+        for name, schema in load_agent_schemas().items()
+    )

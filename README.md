@@ -133,56 +133,71 @@ column has to change on data worth keeping.
 
 ## How a question is routed
 
-This is the most important thing to understand about the system, and it was the
-source of a serious bug worth recording.
+**This app runs in parity mode with the baseline app, ankitaexpert.** The
+routing below is a one to one port of that app, chosen deliberately so the two
+produce the same answer to the same question. Several improvements were removed
+to get there. They are documented as removals rather than deleted from the
+record, because each one was fixing something real.
 
-Two axes are classified independently in a single model call:
+There is exactly one axis and exactly one path. Every question asked in Hybrid or
+Vector mode is classified as:
 
-**Conversational type** resolves references: `named` (a person is mentioned),
-`followup` (refers back to the previous answer), `first` (fresh).
+- **named**: a specific faculty member is mentioned, so extraction runs directly
+  for those people, with no relevance judging.
+- **followup**: no name, but the question refers back ("their education", "the
+  first two"), so the previous result set for that session is reused.
+- **first**: an open question, so every candidate is judged, ranked, cut at an
+  adaptive threshold, and extracted.
 
-**Intent** decides where the answer comes from:
+Cypher mode is still available, but only when the user selects it in the
+composer. Nothing routes there automatically.
 
-| Intent | Meaning | Route |
-| --- | --- | --- |
-| `roster` | Who the faculty are, no subject criterion | Hand written graph query |
-| `factual` | A specific fact, count, total, or ranking | Graph skill, else generated Cypher |
-| `expertise` | Who has a track record in some subject | Semantic retrieval and judging |
+### What was removed, and what it cost
 
-The axes are orthogonal. "How many grants does Cole Brokamp have" is `named` and
-`factual` at once.
+The rewrite had added a second classification axis, `intent`, plus a registry of
+hand written graph queries in `skills.py` matched by regex before any model call.
+Three of the four intents answered from Cypher and never touched retrieval.
 
-**Intent routing overrides the retrieval mode selector.** The vector and hybrid
-toggle chooses *how semantic search works*, never *whether* a question with an
-exact answer gets handled by similarity scoring.
+That fixed a genuine category error. Asked "what are the 20 faculty names", the
+ported pipeline embeds the question, pulls the 100 most similar CV passages,
+finds only some of the faculty in them, and then asks a relevance judge whether
+each person "satisfies" the question. A roster is not a similarity judgement, so
+the judge invents a criterion, the adaptive cutoff discards most of the list, and
+extraction finds nothing extractable because the thing asked for is a *name*
+rather than a fact inside CV prose. The intent router answered the same question
+from a stored query in milliseconds with no model calls.
 
-Before any model call, `skills.match_skill` also does a high precision pattern
-check, so the most common factual phrasings are guaranteed to route correctly
-even if the classifier misbehaves. That matcher is deliberately conservative:
-anything with a subject filter falls through to the model. "List all faculty" is
-a roster question; "list the faculty who study asthma" is not, and answering the
-second with the full roster would be a confident wrong answer.
+It is gone because it is also the single largest reason the two apps disagreed.
+Restoring it means reverting the parity work; see `git log` for the removal.
 
-### The bug this fixed
+Alongside it, the following were reverted, in descending order of how much each
+changes an answer:
 
-Every question in vector and hybrid mode used to be forced through a
-*score each candidate against a criterion* pipeline. That shape is right for
-"who works on X" and wrong in kind for "list the roster", because a roster is not
-a similarity judgement.
+| Reverted | Effect of the revert |
+| --- | --- |
+| Fulltext index back to `text_embeddings2` | The keyword half of hybrid search is inert again, since that index covers `Chunk.embedding`. Different chunks retrieved. |
+| Coverage retrieval pass removed | A single ranked search decides the candidates, so a broad question can miss faculty entirely. |
+| Retriever result formatters removed | Results are parsed out of the stringified record with regexes, which silently drop chunks whose CV text contains a quote or bracket. |
+| Judge and extract prompts restored verbatim | No JSON mode, bare `NONE` sentinel, `Allowed Faculty` block present, no code level score floor. |
+| `source_matches_faculty` loosened | Any single name token matches, so one person's chunks can be attributed to another sharing a surname. |
+| Evidence blocks uncapped, judging uncapped | Every retrieved block is judged in full. Higher cost per open ended question. |
 
-Asked "what are the 20 faculty names", the old pipeline embedded the question,
-pulled the 100 most similar CV passages, and found only **17 of 20** faculty in
-them (coverage depends on how the question happens to embed). It then asked the
-relevance judge whether each person "satisfies" the question, which is a category
-error: the judge invented a criterion and reasoned about whether someone "fits the
-category of a faculty name". Arbitrary scores followed, the adaptive cutoff cut 17
-to 2, extraction found nothing extractable because the thing asked for was a
-*name* rather than a fact inside CV prose, and the answer arrived empty after
-roughly 20 OpenAI calls and 26 seconds. The judge's scoring prose was rendered as
-the answer, which is where the blurbs came from.
+The two things kept from the rewrite are the ones that cannot change an answer:
+retriever calls run on worker threads, and follow up state is keyed per session
+instead of held in two process wide JSON files. The baseline's files are shared
+across every concurrent user, so one person's "their degrees" resolves against
+another's last answer; per session state gives a single user the identical
+sequence without the crosstalk.
 
-The same question now returns all 20 names in about **10 milliseconds with zero
-model calls**.
+### What parity does and does not guarantee
+
+Every deterministic input is identical: the prompts, the API parameters, the
+retrieval, the parsing, the thresholds, and the output formatting. `backend/tests/test_parity.py`
+pins all of it, including an end to end run with the model and the graph faked.
+
+What cannot be guaranteed is byte identical text. Both apps call a reasoning
+model that rejects `temperature`, so neither can pin sampling. Expect the same
+faculty, in the same order, with bullets that say the same things.
 
 ## The three query modes
 
@@ -190,15 +205,8 @@ model calls**.
 | --- | --- | --- |
 | **Hybrid graph search** | Vector plus keyword search over CV passages, expanded through the surrounding graph, then an LLM judges each candidate, ranks them, and extracts evidence. | Open ended expertise questions. This is the default. |
 | **Vector search** | Pure semantic similarity, no graph expansion. | Faster, narrower lookups. |
-| **Natural language to Cypher** | Translates the question into a read only Cypher query, runs it, and explains the rows. Shows you the generated Cypher. | Counting, ranking, and structural questions. |
+| **Natural language to Cypher** | Translates the question into a read only Cypher query, runs it, and explains the rows. Shows you the generated Cypher. | Counting, ranking, and structural questions. Must be selected explicitly. |
 
-The hybrid and vector modes classify every question first:
-
-- **named**: a specific faculty member is mentioned, so extraction runs directly.
-- **followup**: no name, but the question refers back ("their education", "the
-  first two"), so the previous result set for that session is reused.
-- **first**: an open question, so every candidate is judged and ranked with an
-  adaptive score cutoff.
 
 ## Architecture
 
@@ -209,8 +217,7 @@ backend/app/
   db.py           Neo4j driver, read only query helpers, generated Cypher guard
   llm.py          OpenAI client, concurrency gate, tolerant JSON parsing
   retrievers.py   hybrid and vector retrievers, result normalisation
-  pipeline.py     classify, route, retrieve, judge, rank, extract, text to Cypher
-  skills.py       hand written graph queries for factual questions
+  pipeline.py     classify, retrieve, judge, rank, extract, text to Cypher
   feedback_store.py  Postgres persistence for user feedback
   ontology.py     Turtle files to per agent schemas for domain routing
   faculty.py      the 20 name allow list
@@ -431,7 +438,6 @@ Cost depends entirely on which route a question takes.
 | Question | Model calls | Latency |
 | --- | --- | --- |
 | Roster or factual, matched by pattern | **0** | about 10 ms |
-| Factual, matched by the classifier | 1, plus prose for some skills | under 1 s to 5 s |
 | Named or follow up | 2 plus one extraction per person | a few seconds |
 | Open ended expertise | roughly `2 + judged + kept`, about 26 with 20 faculty | 20 to 30 s |
 
