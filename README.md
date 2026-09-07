@@ -375,10 +375,13 @@ Everything lives in `.env`. The values worth knowing about:
 | `OPENAI_API_KEY` | none | Required. The backend refuses queries without it. |
 | `OPENAI_CHAT_MODEL` | `gpt-5-mini` | Used for classification, judging, extraction, and Cypher generation. |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-ada-002` | **Must be the model that wrote the vectors.** See the warning below. |
-| `MAX_JUDGED_FACULTY` | 24 | The main cost control. See below. |
+| `MAX_JUDGED_FACULTY` | 0 | 0 means uncapped, matching the baseline. A positive value caps the fan out. |
 | `RETRIEVAL_TOP_K` | 100 | Chunks pulled per retrieval pass. |
+| `EXPANDED_TOP_K` | 400 | Wider retry, used only when the first pass ranks nobody. |
+| `COVERAGE_RETRIEVAL` | 0 | 1 scores all 20 faculty on every question. Diverges from the baseline. |
+| `LLM_SEED` | 42 | Best effort reproducibility. `gpt-5-mini` rejects `temperature`, so a seed is the only lever. Empty sends none. |
 | `PIPELINE_MAX_CONCURRENCY` | 10 | Concurrent OpenAI calls. |
-| `NEO4J_FULLTEXT_INDEX` | `chunk_text_fulltext` | See the fixes below. |
+| `NEO4J_FULLTEXT_INDEX` | `text_embeddings2` | Matches the baseline. `chunk_text_fulltext` is the better index but retrieves different chunks, so it is opt in. |
 
 ### The embedding model is not a free choice
 
@@ -403,22 +406,33 @@ verifies width only; there is no way to detect the model from the stored vectors
 
 Changing the embedding model safely means re-embedding all 8,375 `Chunk` nodes.
 
-### Retrieval is coverage complete
+### Retrieval is NOT coverage complete, by choice
 
-Discovery questions run two retrievals and union the results, because they do
-different jobs. The selected retriever goes **deep**, returning many passages for
-whoever ranks highest, which is what lets a strong candidate accumulate enough
-evidence to score well. A second query goes **wide**, reusing the same single
-embedding to pull each faculty member's best passages from a large candidate pool,
-so everyone with material gets a fair hearing.
+A discovery question runs one ranked search. Only faculty whose CV text lands
+inside `RETRIEVAL_TOP_K` become candidates, so anyone else is never scored at
+all and the answer gives no hint they were skipped. Measured on this graph:
 
-Coverage alone was tried and is measurably worse. Capping each person at a handful
-of passages starves the genuinely strong candidates and the relevance scores
-collapse: "which faculty have expertise in cystic fibrosis" fell from three well
-evidenced matches to one. Depth plus breadth is what works.
+| Question | Faculty actually scored |
+| --- | --- |
+| expertise in cystic fibrosis | 9 of 20 |
+| spatial methods and environmental exposure | 14 of 20 |
+| causal inference methods | 15 of 20 |
+| machine learning applied to health records | 18 of 20 |
+| list all faculty | 20 of 20 |
 
-Faculty evidence blocks are capped at `BLOCK_CHAR_BUDGET` characters, since
-unioning grows them and these prompts were previously unbounded.
+The cause is that retrieval ranks individual passages rather than people, so a
+topic with two or three prolific specialists fills the whole window. The graph
+expansion compounds it: 100 chunks expand to about 500, but they belong to the
+same ten people, so it deepens rather than widens.
+
+There is a fix, and it is switched off. `COVERAGE_RETRIEVAL=1` adds a second
+wide query that pulls each person's best passages, which takes every question
+above to 20 of 20 for the cost of one extra Cypher query and more judge calls.
+It is off by default because the baseline app has the same hole, and matching
+the baseline is the point of this build.
+
+If a discovery question produces no ranked faculty at all, retrieval retries
+once at `EXPANDED_TOP_K` before giving up.
 
 ### Internal reasoning never reaches the answer
 
@@ -437,13 +451,13 @@ Cost depends entirely on which route a question takes.
 
 | Question | Model calls | Latency |
 | --- | --- | --- |
-| Roster or factual, matched by pattern | **0** | about 10 ms |
 | Named or follow up | 2 plus one extraction per person | a few seconds |
 | Open ended expertise | roughly `2 + judged + kept`, about 26 with 20 faculty | 20 to 30 s |
 
-Only the last row is expensive, and it is expensive because it genuinely reasons
-over every faculty member's evidence. Turn `MAX_JUDGED_FACULTY` down to trade
-recall for cost and speed.
+Every question in Hybrid or Vector mode takes the expensive route, because the
+pattern matched roster and factual shortcuts were removed for parity with the
+baseline. Set `MAX_JUDGED_FACULTY` to a positive number to cap the fan out and
+trade recall for cost and speed; it is 0, meaning uncapped, by default.
 
 ## What changed from the original Streamlit app
 
@@ -451,19 +465,23 @@ The original `dbe_streamlit_app_2/` is still in the repo for reference. The
 pipeline logic carried over nearly intact. These are the substantive changes,
 each found by inspecting the restored graph rather than by reading the code:
 
-1. **The hybrid search keyword half was inert.** It paired the vector index with
+1. **The hybrid search keyword half is inert.** It pairs the vector index with
    `text_embeddings2`, a fulltext index built over `Chunk.embedding`. Keyword
    searching a float array contributes nothing. The graph also ships
-   `chunk_text_fulltext` over `Chunk.text`, which is the real partner index, and
-   that is what the backend uses now.
+   `chunk_text_fulltext` over `Chunk.text`, which is the real partner index.
+   **REVERTED FOR PARITY:** the backend is back on `text_embeddings2`, because
+   switching indexes changes which chunks are retrieved and therefore which
+   faculty answer. Set `NEO4J_FULLTEXT_INDEX=chunk_text_fulltext` to opt in.
 2. **`Chunk.source` does not exist.** The retriever asked for `text`, `source`,
    and `source2`, and only `source2` is a real property, so `source` came back
    null everywhere. Only `source2` is requested now.
-3. **Retriever output is parsed structurally.** The original recovered fields
-   from the library's `repr` output with regexes, which breaks on CV text
-   containing brackets or quotes. Both retrievers now use a `result_formatter`,
-   so the record fields are read directly. `apoc.text.join` is gone from the
-   retrieval query as a side effect, so APOC is no longer strictly required.
+3. **Retriever output could be parsed structurally.** The original recovers
+   fields from the library's `repr` output with regexes, which breaks on CV text
+   containing brackets or quotes and silently drops those chunks.
+   **REVERTED FOR PARITY:** the `result_formatter` is gone and the regexes are
+   back, because reading the real fields recovers chunks the baseline drops.
+   `apoc.text.join` is therefore still in the retrieval query, so APOC is still
+   required.
 4. **Follow up state is per session.** It used to live in
    `previous_faculty.json` and `conversation_history.json` in the working
    directory, shared by every visitor. Two people using the app at once would
@@ -471,13 +489,19 @@ each found by inspecting the restored graph rather than by reading the code:
 5. **The event loop is no longer blocked.** `retriever.search()` is synchronous
    and was being called from async functions, so one slow search stalled every
    other request. Those calls run on worker threads now.
-6. **Ontologies are parsed independently.** A single rdflib `Graph` was reused
-   across all eleven Turtle files, so each ontology accumulated every previous
-   one and ten of the eleven agents advertised a blended vocabulary. Routing had
-   almost nothing to discriminate on.
-7. **JSON responses are enforced and parsed tolerantly.** Prompts that used a
-   bare `NONE` string sentinel now return an explicit boolean so OpenAI JSON
-   mode can be used, with fenced block and salvage handling as a fallback.
+6. **Ontologies could be parsed independently.** A single rdflib `Graph` is
+   reused across all eleven Turtle files, so each ontology accumulates every
+   previous one and ten of the eleven agents advertise a blended vocabulary.
+   **REVERTED FOR PARITY:** the shared `Graph` is back, because separate graphs
+   change the router prompt and therefore which agent is selected. The agent
+   choice does not affect the answer either way, only the name in the trace.
+7. **JSON responses could be enforced.** The judge and extract prompts use a
+   bare `NONE` string sentinel, which JSON mode forbids.
+   **REVERTED FOR PARITY:** JSON mode is off and the strict parser is back, so a
+   reply this cannot read is discarded exactly as the baseline discards it. Note
+   that this makes the chat model and the parser a matched pair: `gpt-4o` wraps
+   JSON in ```json fences, which the strict parser drops, collapsing every
+   answer to "No matching faculty were found for that question."
 8. **Generated Cypher is guarded, in three layers.** Every generated query runs
    in a transaction opened with `READ_ACCESS`, which the server enforces, under
    a `CYPHER_TIMEOUT_SECONDS` transaction timeout so an expensive variable
@@ -490,8 +514,97 @@ each found by inspecting the restored graph rather than by reading the code:
    `GRANT`, `REVOKE`, and `DENY` anchored to the start of a statement, then
    label and property references are stripped before the write clause pass so no
    identifier can collide with a keyword.
-9. **Judging is capped** by `MAX_JUDGED_FACULTY`, since unbounded fan out was
-   the dominant cost.
+9. **Judging can be capped** by `MAX_JUDGED_FACULTY`, since unbounded fan out is
+   the dominant cost. **REVERTED FOR PARITY:** the default is 0, meaning
+   uncapped, because capping changes which faculty are considered. A positive
+   value bounds it again.
+
+10. **A stray apostrophe created a phantom 21st faculty member.** A few
+    `Chunk.source2` values carry a leading quote, so one chunk formed its own
+    504 character block beside the real 40,483 character one. That phantom was
+    scored as a real candidate, pushed the progress count past the 20 faculty
+    that exist, and could surface in an answer as a mis-spelled name.
+    `faculty_from_source` now strips surrounding quotes. This fix is kept.
+
+## Automated deployment
+
+### Why it is pull based rather than GitHub Actions pushing
+
+The production host sits behind the CCHMC research VPN and has no inbound
+reachability from the public internet. GitHub's hosted runners are on the public
+internet, so they cannot SSH in: there is no route, and no secret or key changes
+that. A self hosted runner would solve it by inverting the direction, but adding
+one needs repository admin, which is not available on this org repo.
+
+So the server polls instead. `deploy/auto-deploy.sh` runs on a systemd timer,
+fetches `origin/main` over outbound HTTPS, and redeploys only when the commit
+has moved. No inbound firewall rule, no CI secret, no GitHub permission.
+
+### Install
+
+```bash
+sudo cp /opt/expert/deploy/dbeexpert-deploy.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dbeexpert-deploy.timer
+systemctl list-timers dbeexpert-deploy.timer
+```
+
+The deploy directory must be writable by the user in the unit file:
+
+```bash
+sudo chown -R pot95a:dbeexpert /opt/expert
+sudo chmod 600 /opt/expert/.env
+```
+
+### Use
+
+```bash
+./deploy/auto-deploy.sh --check    # report status, change nothing
+./deploy/auto-deploy.sh            # deploy only if main moved
+./deploy/auto-deploy.sh --force    # redeploy the current commit
+journalctl -u dbeexpert-deploy -f  # watch it
+```
+
+### What it guarantees
+
+It refuses to start unless `.env` and `dump/neo4j.dump` are present, the git
+directory is writable, and Docker is usable. It holds a `flock`, so two deploys
+cannot overlap. It polls `/api/health` for five minutes and treats a healthy API
+with a zero node graph as a failure, since the API answering does not prove the
+dump restored. On any failure it resets to the previous commit and rebuilds.
+
+These commands are deliberately absent and must stay absent, because each one
+destroys something that cannot be recovered from git:
+
+| Command | What it would destroy |
+| --- | --- |
+| `docker compose down -v` | the postgres volume: all chat history and user feedback |
+| `docker volume rm ...` | the same |
+| `docker system prune` | can reap volumes as well |
+| `git clean -xfd` | `.env` and the 163 MB `dump/` |
+| `make clean` | runs `compose down -v` |
+| `make reset-db` | the graph, forcing a 163 MB reload |
+
+`git reset --hard` is used, and is safe here: it moves tracked files only, so
+untracked and ignored paths such as `.env` and `dump/` are untouched. It does
+discard local edits to tracked files in `/opt/expert`, which is intended for a
+deploy target but worth knowing if anyone hand edits files there.
+
+`docker compose up -d --build` always passes `--build`, because the frontend
+bakes `BASE_PATH` into every asset URL at build time. Without it compose reports
+success while still serving the previously built image. Expect one to two
+minutes of downtime per deploy while the images rebuild.
+
+### CI
+
+`.github/workflows/ci.yml` runs on pull requests on GitHub's own runners, which
+need no access to the server: the parity tests, the frontend typecheck and build,
+and a `docker compose config` validation with dummy secrets injected so the
+required variable syntax does not fail the parse.
+
+`.github/workflows/deploy.yml` is included but inert until someone with repo
+admin registers a self hosted runner labelled `dbeexpert`. It does the same
+thing as the script, gated on the tests passing first.
 
 ## Development without Docker
 

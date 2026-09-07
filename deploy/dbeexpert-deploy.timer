@@ -1,0 +1,13 @@
+[Unit]
+Description=Check GitHub for new DBE Expertise Explorer commits every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+# Avoid every machine hitting GitHub on the same second.
+RandomizedDelaySec=30
+Unit=dbeexpert-deploy.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

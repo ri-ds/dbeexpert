@@ -1,0 +1,192 @@
+name: Deploy
+
+# WHY A SELF-HOSTED RUNNER
+#
+# The deploy target, ritmeisz8d02.chmcres.cchmc.org, is an internal CCHMC host
+# reachable only through the research VPN. GitHub's hosted runners sit on the
+# public internet, so they cannot open an SSH connection into that network at
+# all: there is no route, and no secret or key changes that.
+#
+# A self-hosted runner installed on the server solves it by inverting the
+# direction. The runner makes an OUTBOUND HTTPS connection to GitHub and polls
+# for work, so no inbound access, no firewall exception and no VPN credential
+# ever has to live in CI. Because the runner is already on the box, the deploy
+# needs no SSH step either: it operates on /opt/expert directly.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Deploy without waiting for the test job (emergency use)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Two deploys building the same images in the same directory at the same time
+# would race on the git checkout and on the docker build cache. Queue them
+# instead, and never cancel one midway: a half finished deploy is worse than a
+# slow one.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify before deploying
+    if: ${{ !inputs.skip_tests }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - run: pip install -r backend/requirements.txt
+
+      - name: Parity tests
+        env:
+          OPENAI_API_KEY: sk-ci-not-a-real-key
+        run: python backend/tests/test_parity.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend typecheck and build
+        working-directory: frontend
+        run: npm ci && npm run build
+
+  deploy:
+    name: Deploy to ritmeisz8d02
+    needs: [verify]
+    # `always()` lets an emergency workflow_dispatch with skip_tests proceed
+    # even though the verify job was skipped, while a genuine test failure on a
+    # normal push still blocks the deploy.
+    if: ${{ always() && (needs.verify.result == 'success' || inputs.skip_tests) }}
+    runs-on: [self-hosted, dbeexpert]
+    timeout-minutes: 30
+
+    env:
+      DEPLOY_DIR: /opt/expert
+
+    steps:
+      # No actions/checkout. The deploy directory is the source of truth: it
+      # holds .env and the 163 MB dump/, neither of which is in git. Checking
+      # out into the runner workspace would produce a tree without them.
+      - name: Preflight checks
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+
+          # Fail loudly and early rather than half deploying.
+          test -d .git            || { echo "::error::$DEPLOY_DIR is not a git repository"; exit 1; }
+          test -f .env            || { echo "::error::$DEPLOY_DIR/.env is missing; the stack cannot start without it"; exit 1; }
+          test -f dump/neo4j.dump || { echo "::error::$DEPLOY_DIR/dump/neo4j.dump is missing"; exit 1; }
+          test -w .git            || { echo "::error::cannot write to $DEPLOY_DIR/.git as $(whoami); fix ownership"; exit 1; }
+          docker info >/dev/null  || { echo "::error::docker is not usable by $(whoami)"; exit 1; }
+
+          echo "deploy dir : $DEPLOY_DIR"
+          echo "as user    : $(whoami)"
+          echo "current sha: $(git rev-parse --short HEAD)"
+
+      - name: Record the current commit for rollback
+        id: before
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch and fast-forward to the pushed commit
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+
+          git fetch --prune origin
+
+          # reset --hard moves tracked files only. Untracked and ignored paths,
+          # which is where .env and dump/ live, are left completely alone.
+          #
+          # `git clean` is deliberately NOT used here. It would delete .env and
+          # the 163 MB dump, and the stack would never come back up.
+          git reset --hard "origin/${GITHUB_REF_NAME:-main}"
+
+          echo "now at: $(git rev-parse --short HEAD) $(git log -1 --pretty=%s)"
+
+      - name: Build and start
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+
+          # --build is not optional. The frontend bakes BASE_PATH into every
+          # asset URL at build time, so without it compose would happily report
+          # success while still serving the previously built image.
+          #
+          # Not used, and never should be:
+          #   docker compose down -v      destroys postgres (chat history + feedback)
+          #   docker volume rm ...        same
+          #   docker system prune         can reap the volumes too
+          #   make clean                  runs compose down -v
+          #   make reset-db               wipes the graph and forces a 163 MB reload
+          docker compose up -d --build
+
+      - name: Wait for the backend to report healthy
+        id: health
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+
+          # The port lives in .env, so read it from there rather than assuming.
+          PORT="$(grep -E '^BACKEND_PORT=' .env | cut -d= -f2 | tr -d '[:space:]' || true)"
+          PORT="${PORT:-8011}"
+          echo "polling http://127.0.0.1:${PORT}/api/health"
+
+          for i in $(seq 1 60); do
+            BODY="$(curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null || true)"
+            if echo "$BODY" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+              echo "healthy after ~$((i * 5))s"
+              echo "$BODY"
+              # A healthy status with an empty graph means the dump never
+              # restored, which is a broken deploy even though the API answers.
+              echo "$BODY" | grep -qE '"nodes"[[:space:]]*:[[:space:]]*[1-9]' \
+                || { echo "::error::backend is up but the graph reports 0 nodes"; exit 1; }
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "::error::backend did not become healthy within 5 minutes"
+          docker compose ps
+          docker compose logs --tail 80 backend
+          exit 1
+
+      - name: Roll back on failure
+        if: failure() && steps.before.outputs.sha != ''
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          echo "::warning::deploy failed, rolling back to ${{ steps.before.outputs.sha }}"
+          git reset --hard "${{ steps.before.outputs.sha }}"
+          docker compose up -d --build
+          echo "rolled back to $(git rev-parse --short HEAD)"
+
+      - name: Summary
+        if: always()
+        run: |
+          cd "$DEPLOY_DIR"
+          {
+            echo "### Deploy result"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`$(git rev-parse --short HEAD)\` |"
+            echo "| Message | $(git log -1 --pretty=%s) |"
+            echo "| Outcome | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

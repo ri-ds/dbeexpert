@@ -1,0 +1,16 @@
+[Unit]
+Description=Poll GitHub and redeploy the DBE Expertise Explorer if main moved
+Documentation=https://github.com/ri-ds/dbeexpert
+After=docker.service network-online.target
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=pot95a
+WorkingDirectory=/opt/expert
+Environment=DEPLOY_DIR=/opt/expert
+Environment=DEPLOY_BRANCH=main
+ExecStart=/opt/expert/deploy/auto-deploy.sh
+# A deploy rebuilds two images, so give it room. The script holds its own lock,
+# so an overrun cannot stack up with the next timer firing.
+TimeoutStartSec=1800
