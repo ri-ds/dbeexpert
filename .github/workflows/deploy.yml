@@ -167,6 +167,41 @@ jobs:
           docker compose logs --tail 80 backend
           exit 1
 
+      - name: Reclaim space
+        # Every deploy builds two images, so the old ones go dangling and the
+        # buildkit cache grows. A full disk is the most likely route to actually
+        # losing the postgres volume, because Neo4j and Postgres start failing
+        # writes long before anyone types a destructive command.
+        #
+        # `image prune` without -a touches only dangling images. `docker system
+        # prune` and any --volumes form are deliberately absent.
+        if: always()
+        run: |
+          set -euo pipefail
+          docker image prune -f >/dev/null 2>&1 || true
+          docker builder prune -f --filter 'until=168h' >/dev/null 2>&1 || true
+          df -h "$DEPLOY_DIR" | tail -1
+
+      - name: Check the frontend, not just the API
+        # The backend probe cannot see a broken UI. BASE_PATH is a Vite build ARG
+        # baked into every asset URL, so a wrong value serves a blank page whose
+        # script tags all 404 while /api/health stays green.
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          FPORT="$(grep -E '^FRONTEND_PORT=' .env | cut -d= -f2 | tr -d '[:space:]' || true)"
+          FPORT="${FPORT:-8080}"
+          BASE="$(grep -E '^BASE_PATH=' .env | cut -d= -f2 | tr -d '[:space:]' || true)"
+          BASE="${BASE:-/}"
+          html="$(curl -fsS --max-time 10 "http://127.0.0.1:${FPORT}/" 2>/dev/null || true)"
+          if [ -z "$html" ]; then
+            echo "::warning::frontend on ${FPORT} served nothing; API is healthy but the UI may be down"
+          elif printf '%s' "$html" | grep -q "${BASE}assets/"; then
+            echo "frontend OK: serving assets under ${BASE}"
+          else
+            echo "::warning::frontend is up but asset paths do not match BASE_PATH=${BASE}; a stale build is being served"
+          fi
+
       - name: Roll back on failure
         if: failure() && steps.before.outputs.sha != ''
         run: |

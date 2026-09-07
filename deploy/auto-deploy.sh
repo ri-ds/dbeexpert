@@ -97,6 +97,20 @@ log "checked out $(git rev-parse --short HEAD)  $(git log -1 --pretty=%s)"
 log "building and starting"
 docker compose up -d --build
 
+# ---- reclaim space ----
+# Every deploy builds two images, so the previous ones become dangling and the
+# buildkit cache grows. Left alone the disk fills, and a full disk is the most
+# likely way to actually lose the postgres volume: Neo4j and Postgres start
+# failing writes long before anyone types a destructive command.
+#
+# `image prune` without -a removes ONLY dangling images, never a tagged one in
+# use. `docker system prune` and any `--volumes` form are deliberately absent:
+# those can take named volumes with them.
+log "reclaiming space from dangling images and old build cache"
+docker image prune -f >/dev/null 2>&1 || true
+docker builder prune -f --filter 'until=168h' >/dev/null 2>&1 || true
+df -h "$DEPLOY_DIR" | tail -1 | awk '{print "  disk: "$4" free ("$5" used)"}'
+
 # ---- health gate ----
 PORT="$(grep -E '^BACKEND_PORT=' .env | cut -d= -f2 | tr -d '[:space:]' || true)"
 PORT="${PORT:-8011}"
@@ -125,6 +139,25 @@ if [ "$healthy" -ne 1 ]; then
   git reset --hard --quiet "$LOCAL"
   docker compose up -d --build
   die "deploy failed and was rolled back"
+fi
+
+# ---- frontend gate ----
+# The backend probe cannot see a broken frontend. BASE_PATH is a Vite build ARG
+# baked into every asset URL, so a wrong value serves a page whose script tags
+# all 404 while /api/health stays green.
+FPORT="$(grep -E '^FRONTEND_PORT=' .env | cut -d= -f2 | tr -d '[:space:]' || true)"
+FPORT="${FPORT:-8080}"
+BASE="$(grep -E '^BASE_PATH=' .env | cut -d= -f2 | tr -d '[:space:]' || true)"
+BASE="${BASE:-/}"
+
+html="$(curl -fsS --max-time 10 "http://127.0.0.1:${FPORT}/" 2>/dev/null || true)"
+if [ -z "$html" ]; then
+  log "WARNING: frontend on port ${FPORT} served nothing; the backend is healthy but the UI may be down"
+elif printf '%s' "$html" | grep -q "${BASE}assets/"; then
+  log "frontend OK: serving assets under ${BASE}"
+else
+  log "WARNING: frontend is up but its asset paths do not match BASE_PATH=${BASE}."
+  log "         a stale build is being served; the page will load blank with 404s."
 fi
 
 log "deploy complete at $(git rev-parse --short HEAD)"
