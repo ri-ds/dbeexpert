@@ -12,9 +12,22 @@ name: Deploy
 # for work, so no inbound access, no firewall exception and no VPN credential
 # ever has to live in CI. Because the runner is already on the box, the deploy
 # needs no SSH step either: it operates on /opt/expert directly.
+# MANUAL ONLY, on purpose.
+#
+# This used to trigger on every push to main, which was wrong. The deploy job
+# requests a runner labelled [self-hosted, dbeexpert]; nobody has admin on this
+# repo to register one, so every push queued a job that waited 24 hours for a
+# machine that does not exist and then failed. That put a red X on commits that
+# had in fact deployed perfectly well.
+#
+# Real deploys are pull based: a systemd timer on the server polls origin/main
+# every five minutes and redeploys when it moves. See deploy/auto-deploy.sh.
+# Nothing in GitHub Actions can reach that host, which is behind the research
+# VPN with no inbound route.
+#
+# Leave this manual until a self-hosted runner labelled dbeexpert exists. Then
+# either trigger it from the Actions tab or add the push trigger back.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       skip_tests:
